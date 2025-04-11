@@ -10,12 +10,13 @@ import Combine
 
 @MainActor
 final class GenericFetchedResultsController<T: NSManagedObject>: NSObject, @preconcurrency NSFetchedResultsControllerDelegate {
-    let fetchedResultsController: NSFetchedResultsController<T>
-    private var _objects: [T] = []
     var objects: [T] {
         _objects
     }
-    var onValueChanged: (([T]) -> Void)?
+    
+    private let fetchedResultsController: NSFetchedResultsController<T>
+    private var onValueChanged: (([T]) -> Void)?
+    private var _objects: [T] = []
     
     init(fetchRequest: NSFetchRequest<T>, managedObjectContext: NSManagedObjectContext) {
         fetchedResultsController = NSFetchedResultsController(
@@ -33,15 +34,15 @@ final class GenericFetchedResultsController<T: NSManagedObject>: NSObject, @prec
             try fetchedResultsController.performFetch()
             _objects = fetchedResultsController.fetchedObjects ?? []
         } catch {
-            print("Error performing initial fetch: \(error)")
+            reportIssue("Error performing initial fetch: \(error)")
         }
     }
     
-    func setOnValueChanged(_ onValueChanged: @escaping ([T]) -> Void) {
+    func observeValueChange(_ onValueChanged: @escaping ([T]) -> Void) {
         self.onValueChanged = onValueChanged
     }
     
-    func cancelValueChange() {
+    func cancelValueChangeObservation() {
         self.onValueChanged = nil
     }
     
