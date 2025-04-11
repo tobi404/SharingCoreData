@@ -6,115 +6,47 @@
 //
 
 @preconcurrency import CoreData
+import Combine
 
-/// A generic wrapper for NSFetchedResultsController that provides closure callbacks
-/// for changes in managed objects.
-actor FetchedResultsControllerWrapper<T: NSManagedObject>: NSObject, NSFetchedResultsControllerDelegate {
+@MainActor
+final class GenericFetchedResultsController<T: NSManagedObject>: NSObject, @preconcurrency NSFetchedResultsControllerDelegate {
+    let fetchedResultsController: NSFetchedResultsController<T>
+    private var _objects: [T] = []
+    var objects: [T] {
+        _objects
+    }
+    var onValueChanged: (([T]) -> Void)?
     
-    // MARK: - Properties
-    
-    /// The underlying NSFetchedResultsController.
-    private var fetchedResultsController: NSFetchedResultsController<T>
-    
-    /// Closure called when an object is updated.
-    var objectUpdated: ((T) -> Void)?
-    
-    /// Closure called when an object is inserted.
-    var objectInserted: ((T) -> Void)?
-    
-    /// Closure called when an object is deleted.
-    var objectDeleted: ((T) -> Void)?
-    
-    /// Closure called when an object is moved.
-    /// Provides the object, original indexPath, and new indexPath.
-    var objectMoved: ((T, IndexPath, IndexPath) -> Void)?
-    
-    // MARK: - Initializer
-    
-    /// Initializes the wrapper with a fetch request, context, and optional section name and cache.
-    /// - Parameters:
-    ///   - fetchRequest: The NSFetchRequest for the managed object type T.
-    ///   - context: The NSManagedObjectContext to operate on.
-    ///   - sectionNameKeyPath: An optional section name key path.
-    ///   - cacheName: An optional cache name.
-    init(
-        fetchRequest: NSFetchRequest<T>,
-        context: NSManagedObjectContext,
-        sectionNameKeyPath: String? = nil,
-        cacheName: String? = nil,
-        objectUpdated: @escaping ((T) -> Void),
-        objectInserted: @escaping ((T) -> Void),
-        objectDeleted: @escaping ((T) -> Void),
-        objectMoved: @escaping ((T, IndexPath, IndexPath) -> Void)
-    ) {
+    init(fetchRequest: NSFetchRequest<T>, managedObjectContext: NSManagedObjectContext) {
         fetchedResultsController = NSFetchedResultsController(
             fetchRequest: fetchRequest,
-            managedObjectContext: context,
-            sectionNameKeyPath: sectionNameKeyPath,
-            cacheName: cacheName
+            managedObjectContext: managedObjectContext,
+            sectionNameKeyPath: nil,
+            cacheName: nil
         )
-        super.init()
-        self.objectUpdated = objectUpdated
-        self.objectInserted = objectInserted
-        self.objectDeleted = objectDeleted
-        self.objectMoved = objectMoved
         
-        // Set the delegate for the NSFetchedResultsController.
+        super.init()
+        
         fetchedResultsController.delegate = self
         
-        // Perform the initial fetch
         do {
             try fetchedResultsController.performFetch()
+            _objects = fetchedResultsController.fetchedObjects ?? []
         } catch {
-            reportIssue("Error performing initial fetch: \(error)")
+            print("Error performing initial fetch: \(error)")
         }
     }
     
-    // MARK: - Public Accessors
-    
-    /// Access to the currently fetched objects.
-    var objects: [T]? {
-        fetchedResultsController.fetchedObjects
+    func setOnValueChanged(_ onValueChanged: @escaping ([T]) -> Void) {
+        self.onValueChanged = onValueChanged
     }
     
-    func stop() {
-        fetchedResultsController.delegate = nil
+    func cancelValueChange() {
+        self.onValueChanged = nil
     }
     
-    // MARK: - NSFetchedResultsControllerDelegate Methods
-    
-    /// Tells the delegate that a fetched object has been changed due to an add, remove, move, or update.
-    private func controller(
-        _ controller: NSFetchedResultsController<NSFetchRequestResult>,
-        didChange anObject: Any,
-        at indexPath: IndexPath?,
-        for type: NSFetchedResultsChangeType,
-        newIndexPath: IndexPath?
-    ) async {
-        // Cast the changed object to the generic type.
-        guard let object = anObject as? T else { return }
-        
-        // Handle changes based on the type.
-        switch type {
-        case .insert:
-            objectInserted?(object)
-        case .delete:
-            objectDeleted?(object)
-        case .update:
-            objectUpdated?(object)
-        case .move:
-            // Ensure both old and new index paths are valid.
-            if let oldIndexPath = indexPath, let newIndexPath = newIndexPath {
-                objectMoved?(object, oldIndexPath, newIndexPath)
-            }
-        @unknown default:
-            break
-        }
-    }
-    
-    // Optionally, if you want to notify after all changes have been applied.
-    private func controllerDidChangeContent(_ controller: NSFetchedResultsController<NSFetchRequestResult>) async {
-        // For example, you might refresh a UI list here.
-        // This method is optional if you want a "batch update" callback.
+    func controllerDidChangeContent(_ controller: NSFetchedResultsController<NSFetchRequestResult>) {
+        _objects = fetchedResultsController.fetchedObjects as? [T] ?? []
+        onValueChanged?(_objects)
     }
 }

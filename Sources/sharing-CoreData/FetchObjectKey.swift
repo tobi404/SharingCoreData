@@ -5,16 +5,18 @@
 //  Created by Beka Demuradze on 10.04.25.
 //
 
+import Combine
 @preconcurrency import CoreData
 
 extension SharedReaderKey {
-    public static func fetchOne<Value: NSManagedObject>(
+    @MainActor
+    public static func fetchAll<Value: NSManagedObject>(
         for object: Value.Type,
         predicate: NSPredicate? = nil,
-        sort: NSSortDescriptor? = nil
+        sort: NSSortDescriptor
     ) -> Self
-    where Self == FetchObjectKey<Value> {
-        FetchObjectKey(
+    where Self == FetchAllObjectKey<Value> {
+        FetchAllObjectKey(
             for: object,
             predicate: predicate,
             sort: sort
@@ -22,10 +24,12 @@ extension SharedReaderKey {
     }
 }
 
-public struct FetchObjectKey<Value: NSManagedObject>: SharedReaderKey {
-    @Dependency(\.defaultContainer) var container
-    let fetchRequest: NSFetchRequest<Value>
+public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
+    let container: NSPersistentContainer
+    let fetchRequest: NSFetchRequest<Object>
+    var controller: GenericFetchedResultsController<Object>?
     
+    public typealias Value = [Object]
     public typealias ID = FetchKeyID
     
     public var id: ID {
@@ -35,60 +39,51 @@ public struct FetchObjectKey<Value: NSManagedObject>: SharedReaderKey {
         )
     }
     
+    @MainActor
     init(
-        for object: Value.Type,
+        for object: Object.Type,
         predicate: NSPredicate? = nil,
         sort: NSSortDescriptor? = nil
     ) {
-        let fetchRequest = NSFetchRequest<Value>()
+        @Dependency(\.defaultContainer) var container
+        
+        let fetchRequest = Object.fetchRequest() as! NSFetchRequest<Object>
         fetchRequest.predicate = predicate
         if let sort {
             fetchRequest.sortDescriptors = [sort]
         }
+        
+        self.container = container
         self.fetchRequest = fetchRequest
+        self.controller = GenericFetchedResultsController<Object>(
+            fetchRequest: fetchRequest,
+            managedObjectContext: container.viewContext
+        )
     }
     
     public func load(
-        context: LoadContext<Value>,
-        continuation: LoadContinuation<Value>
+        context: LoadContext<[Object]>,
+        continuation: LoadContinuation<[Object]>
     ) {
-        do {
-            guard let data = try container.viewContext.fetch(fetchRequest).first else {
-                return continuation.resumeReturningInitialValue()
-            }
-            
-            return continuation.resume(
-                returning: data
-            )
-        } catch {
-            return continuation.resumeReturningInitialValue()
+        Task {
+            guard let objects = await controller?.objects else { return }
+            await continuation.resume(returning: objects)
         }
     }
     
     public func subscribe(
-        context: LoadContext<Value>,
-        subscriber: SharedSubscriber<Value>
+        context: LoadContext<[Object]>,
+        subscriber: SharedSubscriber<[Object]>
     ) -> SharedSubscription {
-        let fetchListener = FetchedResultsControllerWrapper<Value>(
-            fetchRequest: fetchRequest,
-            context: container.viewContext,
-            objectUpdated: { object in
-                subscriber.yield(object)
-            },
-            objectInserted: { object in
-                reportIssue("Object insertion called")
-            },
-            objectDeleted: { object in
-                subscriber.yieldReturningInitialValue()
-            },
-            objectMoved: { _,_,_ in
-                reportIssue("objectMoved called")
+        Task {
+            await controller?.setOnValueChanged { objects in
+                subscriber.yield(objects)
             }
-        )
+        }
         
         return SharedSubscription {
             Task {
-                await fetchListener.stop()
+                await controller?.cancelValueChange()
             }
         }
     }
@@ -109,3 +104,4 @@ public struct FetchKeyID: Hashable {
 }
 
 extension NSManagedObject: @unchecked @retroactive Sendable {}
+
