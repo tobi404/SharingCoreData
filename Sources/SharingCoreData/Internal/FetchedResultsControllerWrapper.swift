@@ -5,16 +5,16 @@
 //  Created by Beka Demuradze on 10.04.25.
 //
 
-@preconcurrency import CoreData
 import Combine
+@preconcurrency import CoreData
 
-@MainActor
-final class GenericFetchedResultsController<T: NSManagedObject>: NSObject, @preconcurrency NSFetchedResultsControllerDelegate {
+actor GenericFetchedResultsController<T: NSManagedObject>: NSObject {
     var objects: [T] {
         _objects
     }
     
     private let fetchedResultsController: NSFetchedResultsController<T>
+    private let delegate = GenericFetchedResultsControllerDelegate<T>()
     private var onValueChanged: (([T]) -> Void)?
     private var _objects: [T] = []
     
@@ -28,7 +28,7 @@ final class GenericFetchedResultsController<T: NSManagedObject>: NSObject, @prec
         
         super.init()
         
-        fetchedResultsController.delegate = self
+        fetchedResultsController.delegate = delegate
         
         do {
             try fetchedResultsController.performFetch()
@@ -39,15 +39,19 @@ final class GenericFetchedResultsController<T: NSManagedObject>: NSObject, @prec
     }
     
     func observeValueChange(_ onValueChanged: @escaping ([T]) -> Void) {
-        self.onValueChanged = onValueChanged
+        self.delegate.onValueChanged = onValueChanged
     }
     
     func cancelValueChangeObservation() {
-        self.onValueChanged = nil
+        self.delegate.onValueChanged = nil
     }
+}
+
+final class GenericFetchedResultsControllerDelegate<T: NSManagedObject>: NSObject, NSFetchedResultsControllerDelegate {
+    var onValueChanged: (([T]) -> Void)?
     
     func controllerDidChangeContent(_ controller: NSFetchedResultsController<NSFetchRequestResult>) {
-        _objects = fetchedResultsController.fetchedObjects as? [T] ?? []
-        onValueChanged?(_objects)
+        guard let objects = controller.fetchedObjects as? [T] else { return }
+        onValueChanged?(objects)
     }
 }

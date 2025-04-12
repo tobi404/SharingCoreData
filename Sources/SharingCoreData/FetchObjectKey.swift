@@ -9,7 +9,6 @@ import Combine
 @preconcurrency import CoreData
 
 extension SharedReaderKey {
-    @MainActor
     public static func fetch<Value: NSManagedObject & Identifiable>(
         for object: Value.Type,
         predicate: NSPredicate? = nil
@@ -25,7 +24,6 @@ extension SharedReaderKey {
         ]
     }
     
-    @MainActor
     public static func fetchAll<Value: NSManagedObject>(
         for object: Value.Type,
         predicate: NSPredicate? = nil,
@@ -60,7 +58,6 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
         )
     }
     
-    @MainActor
     init(
         for object: Object.Type,
         predicate: NSPredicate? = nil,
@@ -88,7 +85,7 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
     ) {
         Task {
             guard let objects = await controller?.objects else { return }
-            await continuation.resume(returning: objects)
+            continuation.resume(returning: objects)
         }
     }
     
@@ -128,7 +125,6 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
         )
     }
     
-    @MainActor
     init(
         for object: Object.Type,
         predicate: NSPredicate? = nil,
@@ -157,12 +153,11 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
         continuation: LoadContinuation<Object?>
     ) {
         Task {
-            await print(controller?.objects)
             if let object = await controller?.objects.last {
                 store.object = object
-                await continuation.resume(returning: object)
+                continuation.resume(returning: object)
             } else {
-                await continuation.resumeReturningInitialValue()
+                continuation.resumeReturningInitialValue()
             }
         }
     }
