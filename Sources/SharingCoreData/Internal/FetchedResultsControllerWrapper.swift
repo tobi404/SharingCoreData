@@ -5,16 +5,15 @@
 //  Created by Beka Demuradze on 10.04.25.
 //
 
-import Combine
 @preconcurrency import CoreData
 
-actor GenericFetchedResultsController<T: NSManagedObject>: NSObject {
+actor FetchedResultsControllerWrapper<T: NSManagedObject>: NSObject {
     var objects: [T] {
         _objects
     }
     
     private let fetchedResultsController: NSFetchedResultsController<T>
-    private let delegate = GenericFetchedResultsControllerDelegate<T>()
+    private let delegate = FetchedResultsControllerDelegate<T>()
     private var onValueChanged: (([T]) -> Void)?
     private var _objects: [T] = []
     
@@ -47,7 +46,7 @@ actor GenericFetchedResultsController<T: NSManagedObject>: NSObject {
     }
 }
 
-final class GenericFetchedResultsControllerDelegate<T: NSManagedObject>: NSObject, NSFetchedResultsControllerDelegate {
+final class FetchedResultsControllerDelegate<T: NSManagedObject>: NSObject, NSFetchedResultsControllerDelegate {
     var onValueChanged: (([T]) -> Void)?
     
     func controllerDidChangeContent(_ controller: NSFetchedResultsController<NSFetchRequestResult>) {

@@ -46,7 +46,7 @@ extension SharedReaderKey {
 public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
     let container: NSPersistentContainer
     let fetchRequest: NSFetchRequest<Object>
-    var controller: GenericFetchedResultsController<Object>?
+    var controller: FetchedResultsControllerWrapper<Object>?
     
     public typealias Value = [Object]
     public typealias ID = FetchKeyID
@@ -73,7 +73,7 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
         
         self.container = container
         self.fetchRequest = fetchRequest
-        self.controller = GenericFetchedResultsController<Object>(
+        self.controller = FetchedResultsControllerWrapper<Object>(
             fetchRequest: fetchRequest,
             managedObjectContext: container.viewContext
         )
@@ -113,7 +113,7 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
     let container: NSPersistentContainer
     let fetchRequest: NSFetchRequest<Object>
     let store = ObjectStore<Object>()
-    var controller: GenericFetchedResultsController<Object>?
+    var controller: FetchedResultsControllerWrapper<Object>?
     
     public typealias Value = Object?
     public typealias ID = FetchKeyID
@@ -142,7 +142,7 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
         
         self.container = container
         self.fetchRequest = fetchRequest
-        self.controller = GenericFetchedResultsController<Object>(
+        self.controller = FetchedResultsControllerWrapper<Object>(
             fetchRequest: fetchRequest,
             managedObjectContext: container.viewContext
         )
