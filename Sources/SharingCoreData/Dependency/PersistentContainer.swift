@@ -1,5 +1,5 @@
 //
-//  DefaultContainer.swift
+//  PersistentContainer.swift
 //  sharing-CoreData
 //
 //  Created by Beka Demuradze on 10.04.25.
@@ -9,12 +9,12 @@ import Dependencies
 @preconcurrency import CoreData
 
 extension DependencyValues {
-    public var defaultContainer: NSPersistentContainer {
-        get { self[DefaultContainerKey.self] }
-        set { self[DefaultContainerKey.self] = newValue }
+    public var persistentContainer: NSPersistentContainer {
+        get { self[PersistentContainerKey.self] }
+        set { self[PersistentContainerKey.self] = newValue }
     }
     
-    private enum DefaultContainerKey: DependencyKey {
+    private enum PersistentContainerKey: DependencyKey {
         static var liveValue: NSPersistentContainer { testValue }
         static var testValue: NSPersistentContainer {
             var message: String {

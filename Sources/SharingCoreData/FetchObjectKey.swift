@@ -5,7 +5,7 @@
 //  Created by Beka Demuradze on 10.04.25.
 //
 
-import Combine
+import Sharing
 @preconcurrency import CoreData
 
 extension SharedReaderKey {
@@ -34,9 +34,39 @@ extension SharedReaderKey {
             FetchAllObjectKey(
                 for: object,
                 predicate: predicate,
+                sort: [sort]
+            ),
+            default: []
+        ]
+    }
+    
+    public static func fetchAll<Value: NSManagedObject>(
+        for object: Value.Type,
+        predicate: NSPredicate? = nil,
+        sort: [NSSortDescriptor]
+    ) -> Self
+    where Self == FetchAllObjectKey<Value>.Default {
+        Self[
+            FetchAllObjectKey(
+                for: object,
+                predicate: predicate,
                 sort: sort
             ),
             default: []
+        ]
+    }
+    
+    public static func fetchCount<Value: NSManagedObject>(
+        for object: Value.Type,
+        predicate: NSPredicate? = nil
+    ) -> Self
+    where Self == FetchCountKey<Value>.Default {
+        Self[
+            FetchCountKey(
+                for: object,
+                predicate: predicate
+            ),
+            default: 0
         ]
     }
 }
@@ -61,15 +91,13 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
     init(
         for object: Object.Type,
         predicate: NSPredicate? = nil,
-        sort: NSSortDescriptor? = nil
+        sort: [NSSortDescriptor]
     ) {
-        @Dependency(\.defaultContainer) var container
+        @Dependency(\.persistentContainer) var container
         
         let fetchRequest = Object.fetchRequest() as! NSFetchRequest<Object>
         fetchRequest.predicate = predicate
-        if let sort {
-            fetchRequest.sortDescriptors = [sort]
-        }
+        fetchRequest.sortDescriptors = sort
         
         self.container = container
         self.fetchRequest = fetchRequest
@@ -130,7 +158,7 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
         predicate: NSPredicate? = nil,
         sort: NSSortDescriptor? = nil
     ) {
-        @Dependency(\.defaultContainer) var container
+        @Dependency(\.persistentContainer) var container
         
         let fetchRequest = Object.fetchRequest() as! NSFetchRequest<Object>
         fetchRequest.predicate = predicate
@@ -184,11 +212,72 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
     }
 }
 
+// MARK: - FetchCount
+
+public struct FetchCountKey<Object: NSManagedObject>: SharedReaderKey {
+    let container: NSPersistentContainer
+    let predicate: NSPredicate?
+    private let observerHolder = ObserverHolder<Object>()
+
+    public typealias Value = Int
+    public typealias ID = FetchKeyID
+    
+    public var id: ID {
+        let objectName = String(describing: Object.self)
+        return FetchKeyID(
+            description: predicate?.description ?? objectName,
+            objectName: objectName
+        )
+    }
+    
+    init(
+        for object: Object.Type,
+        predicate: NSPredicate? = nil
+    ) {
+        @Dependency(\.persistentContainer) var container
+        
+        self.container = container
+        self.predicate = predicate
+    }
+    
+    public func load(
+        context: LoadContext<Int>,
+        continuation: LoadContinuation<Int>
+    ) {
+        Task {
+            let observer = await observerHolder.getOrCreateObserver(
+                context: container.viewContext,
+                predicate: predicate
+            )
+            continuation.resume(returning: await observer.count)
+        }
+    }
+    
+    public func subscribe(
+        context: LoadContext<Int>,
+        subscriber: SharedSubscriber<Int>
+    ) -> SharedSubscription {
+        Task {
+            let observer = await observerHolder.getOrCreateObserver(context: container.viewContext, predicate: predicate)
+            
+            await observer.startObserving() { count in
+                subscriber.yield(count)
+            }
+        }
+        
+        return SharedSubscription {
+            Task {
+                let observer = await observerHolder.getOrCreateObserver(context: container.viewContext, predicate: predicate)
+                await observer.stopObserving()
+            }
+        }
+    }
+}
+
 class ObjectStore<Object: NSManagedObject & Identifiable>: @unchecked Sendable {
     var object: Object?
 }
 
-/// A value that uniquely identifies a fetch key.
 public struct FetchKeyID: Hashable {
     fileprivate let description: String
     fileprivate let objectName: String
@@ -203,4 +292,5 @@ public struct FetchKeyID: Hashable {
 }
 
 extension NSManagedObject: @unchecked @retroactive Sendable {}
+extension NSPredicate: @unchecked @retroactive Sendable {}
 
