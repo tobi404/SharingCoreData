@@ -27,14 +27,20 @@ extension SharedReaderKey {
     public static func fetchAll<Value: NSManagedObject>(
         for object: Value.Type,
         predicate: NSPredicate? = nil,
-        sort: NSSortDescriptor
+        sort: NSSortDescriptor? = nil
     ) -> Self
     where Self == FetchAllObjectKey<Value>.Default {
-        Self[
+        var descriptors: [NSSortDescriptor] = []
+        
+        if let sort {
+            descriptors.append(sort)
+        }
+        
+        return Self[
             FetchAllObjectKey(
                 for: object,
                 predicate: predicate,
-                sort: [sort]
+                sort: descriptors
             ),
             default: []
         ]
@@ -43,14 +49,14 @@ extension SharedReaderKey {
     public static func fetchAll<Value: NSManagedObject>(
         for object: Value.Type,
         predicate: NSPredicate? = nil,
-        sort: [NSSortDescriptor]
+        descriptors: [NSSortDescriptor] = []
     ) -> Self
     where Self == FetchAllObjectKey<Value>.Default {
         Self[
             FetchAllObjectKey(
                 for: object,
                 predicate: predicate,
-                sort: sort
+                sort: descriptors
             ),
             default: []
         ]
@@ -74,18 +80,15 @@ extension SharedReaderKey {
 // MARK: - FetchAll
 
 public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
-    let container: NSPersistentContainer
-    let fetchRequest: NSFetchRequest<Object>
-    let objectFetcher: ObjectFetcher<Object>
+    private let container: NSPersistentContainer
+    private let fetchRequest: NSFetchRequest<Object>
+    private let objectFetcher: ObjectFetcher<Object>
     
     public typealias Value = [Object]
-    public typealias ID = FetchKeyID
+    public typealias ID = FetchRequestID
     
     public var id: ID {
-        FetchKeyID(
-            description: fetchRequest.description,
-            objectName: fetchRequest.entity?.name ?? ""
-        )
+        FetchRequestID(from: fetchRequest)
     }
     
     init(
@@ -101,7 +104,10 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
         
         self.container = container
         self.fetchRequest = fetchRequest
-        self.objectFetcher = ObjectFetcher<Object>(fetchRequest: fetchRequest, context: container.viewContext)
+        self.objectFetcher = ObjectFetcher<Object>(
+            fetchRequest: fetchRequest,
+            context: container.viewContext
+        )
     }
     
     public func load(
@@ -135,18 +141,15 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
 // MARK: - FetchOne
 
 public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedReaderKey {
-    let container: NSPersistentContainer
-    let fetchRequest: NSFetchRequest<Object>
-    let objectFetcher: SingleObjectFetcher<Object>
+    private let container: NSPersistentContainer
+    private let fetchRequest: NSFetchRequest<Object>
+    private let objectFetcher: SingleObjectFetcher<Object>
     
     public typealias Value = Object?
-    public typealias ID = FetchKeyID
+    public typealias ID = FetchRequestID
     
     public var id: ID {
-        FetchKeyID(
-            description: fetchRequest.description,
-            objectName: fetchRequest.entity?.name ?? ""
-        )
+        FetchRequestID(from: fetchRequest)
     }
     
     init(
@@ -207,18 +210,14 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
 
 public struct FetchCountKey<Object: NSManagedObject>: SharedReaderKey {
     private let container: NSPersistentContainer
-    private let predicate: NSPredicate?
+    private let fetchRequest: NSFetchRequest<Object>
     private let countFetcher: ObjectCountFetcher<Object>
-
+    
     public typealias Value = Int
-    public typealias ID = FetchKeyID
+    public typealias ID = FetchRequestID
     
     public var id: ID {
-        let objectName = String(describing: Object.self)
-        return FetchKeyID(
-            description: predicate?.description ?? objectName,
-            objectName: objectName
-        )
+        FetchRequestID(from: fetchRequest)
     }
     
     init(
@@ -227,10 +226,11 @@ public struct FetchCountKey<Object: NSManagedObject>: SharedReaderKey {
     ) {
         @Dependency(\.persistentContainer) var container
         
-        self.container = container
-        self.predicate = predicate
-        let fetchRequest = NSFetchRequest<Object>()
+        let fetchRequest = Object.fetchRequest() as! NSFetchRequest<Object>
         fetchRequest.predicate = predicate
+        
+        self.container = container
+        self.fetchRequest = fetchRequest
         self.countFetcher = ObjectCountFetcher(fetchRequest: fetchRequest, context: container.viewContext)
     }
     
@@ -262,18 +262,44 @@ public struct FetchCountKey<Object: NSManagedObject>: SharedReaderKey {
     }
 }
 
-public struct FetchKeyID: Hashable {
-    fileprivate let description: String
-    fileprivate let objectName: String
+// MARK: - FetchRequestID
+
+public struct FetchRequestID: Hashable {
+    // Core properties that define what data is fetched
+    fileprivate let entityName: String
+    fileprivate let predicateFormat: String?
+    fileprivate let sortDescriptorRepresentations: [SortDescriptorRepresentation]
     
-    fileprivate init(
-        description: String,
-        objectName: String
-    ) {
-        self.description = description
-        self.objectName = objectName
+    // Helper struct for sort descriptors
+    fileprivate struct SortDescriptorRepresentation: Hashable {
+        let key: String?
+        let ascending: Bool
+        
+        init(from sortDescriptor: NSSortDescriptor) {
+            self.key = sortDescriptor.key
+            self.ascending = sortDescriptor.ascending
+        }
+    }
+    
+    // Initialize from an NSFetchRequest
+    public init<T: NSFetchRequestResult>(from fetchRequest: NSFetchRequest<T>) {
+        self.entityName = fetchRequest.entityName ?? ""
+        
+        // Handle predicate
+        self.predicateFormat = fetchRequest.predicate?.predicateFormat
+
+        // Handle sort descriptors
+        if let sortDescriptors = fetchRequest.sortDescriptors {
+            self.sortDescriptorRepresentations = sortDescriptors.map {
+                SortDescriptorRepresentation(from: $0)
+            }
+        } else {
+            self.sortDescriptorRepresentations = []
+        }
     }
 }
+
+// MARK: - Core Data sendability
 
 extension NSManagedObject: @unchecked @retroactive Sendable {}
 extension NSPredicate: @unchecked @retroactive Sendable {}
