@@ -76,7 +76,7 @@ extension SharedReaderKey {
 public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
     let container: NSPersistentContainer
     let fetchRequest: NSFetchRequest<Object>
-    var controller: FetchedResultsControllerWrapper<Object>?
+    let objectFetcher: ObjectFetcher<Object>
     
     public typealias Value = [Object]
     public typealias ID = FetchKeyID
@@ -101,10 +101,7 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
         
         self.container = container
         self.fetchRequest = fetchRequest
-        self.controller = FetchedResultsControllerWrapper<Object>(
-            fetchRequest: fetchRequest,
-            managedObjectContext: container.viewContext
-        )
+        self.objectFetcher = ObjectFetcher<Object>(fetchRequest: fetchRequest, context: container.viewContext)
     }
     
     public func load(
@@ -112,7 +109,7 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
         continuation: LoadContinuation<[Object]>
     ) {
         Task {
-            guard let objects = await controller?.objects else { return }
+            let objects = await objectFetcher.objects()
             continuation.resume(returning: objects)
         }
     }
@@ -122,14 +119,14 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
         subscriber: SharedSubscriber<[Object]>
     ) -> SharedSubscription {
         Task {
-            await controller?.observeValueChange { objects in
+            for await objects in await objectFetcher.objectsStream {
                 subscriber.yield(objects)
             }
         }
         
         return SharedSubscription {
             Task {
-                await controller?.cancelValueChangeObservation()
+                await objectFetcher.cancelStream()
             }
         }
     }
@@ -140,8 +137,7 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
 public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedReaderKey {
     let container: NSPersistentContainer
     let fetchRequest: NSFetchRequest<Object>
-    let store = ObjectStore<Object>()
-    var controller: FetchedResultsControllerWrapper<Object>?
+    let objectFetcher: SingleObjectFetcher<Object>
     
     public typealias Value = Object?
     public typealias ID = FetchKeyID
@@ -170,9 +166,9 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
         
         self.container = container
         self.fetchRequest = fetchRequest
-        self.controller = FetchedResultsControllerWrapper<Object>(
+        self.objectFetcher = SingleObjectFetcher(
             fetchRequest: fetchRequest,
-            managedObjectContext: container.viewContext
+            context: container.viewContext
         )
     }
     
@@ -181,8 +177,7 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
         continuation: LoadContinuation<Object?>
     ) {
         Task {
-            if let object = await controller?.objects.last {
-                store.object = object
+            if let object = await objectFetcher.object() {
                 continuation.resume(returning: object)
             } else {
                 continuation.resumeReturningInitialValue()
@@ -195,18 +190,14 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
         subscriber: SharedSubscriber<Object?>
     ) -> SharedSubscription {
         Task {
-            await controller?.observeValueChange { objects in
-                guard let object = objects.first(where: { $0.id == store.object?.id }) else {
-                    subscriber.yieldReturningInitialValue()
-                    return
-                }
+            for await object in await objectFetcher.objectStream {
                 subscriber.yield(object)
             }
         }
         
         return SharedSubscription {
             Task {
-                await controller?.cancelValueChangeObservation()
+                await objectFetcher.cancelStream()
             }
         }
     }
@@ -215,9 +206,9 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
 // MARK: - FetchCount
 
 public struct FetchCountKey<Object: NSManagedObject>: SharedReaderKey {
-    let container: NSPersistentContainer
-    let predicate: NSPredicate?
-    private let observerHolder = ObserverHolder<Object>()
+    private let container: NSPersistentContainer
+    private let predicate: NSPredicate?
+    private let countFetcher: ObjectCountFetcher<Object>
 
     public typealias Value = Int
     public typealias ID = FetchKeyID
@@ -238,6 +229,9 @@ public struct FetchCountKey<Object: NSManagedObject>: SharedReaderKey {
         
         self.container = container
         self.predicate = predicate
+        let fetchRequest = NSFetchRequest<Object>()
+        fetchRequest.predicate = predicate
+        self.countFetcher = ObjectCountFetcher(fetchRequest: fetchRequest, context: container.viewContext)
     }
     
     public func load(
@@ -245,11 +239,8 @@ public struct FetchCountKey<Object: NSManagedObject>: SharedReaderKey {
         continuation: LoadContinuation<Int>
     ) {
         Task {
-            let observer = await observerHolder.getOrCreateObserver(
-                context: container.viewContext,
-                predicate: predicate
-            )
-            continuation.resume(returning: await observer.count)
+            let count = await countFetcher.count()
+            continuation.resume(returning: count)
         }
     }
     
@@ -258,24 +249,17 @@ public struct FetchCountKey<Object: NSManagedObject>: SharedReaderKey {
         subscriber: SharedSubscriber<Int>
     ) -> SharedSubscription {
         Task {
-            let observer = await observerHolder.getOrCreateObserver(context: container.viewContext, predicate: predicate)
-            
-            await observer.startObserving() { count in
+            for await count in await countFetcher.countStream {
                 subscriber.yield(count)
             }
         }
         
         return SharedSubscription {
             Task {
-                let observer = await observerHolder.getOrCreateObserver(context: container.viewContext, predicate: predicate)
-                await observer.stopObserving()
+                await countFetcher.cancelStream()
             }
         }
     }
-}
-
-class ObjectStore<Object: NSManagedObject & Identifiable>: @unchecked Sendable {
-    var object: Object?
 }
 
 public struct FetchKeyID: Hashable {
