@@ -17,16 +17,22 @@ actor ObjectCountFetcher<T: NSManagedObject>: Sendable {
     // AsyncStream properties
     private var continuation: AsyncStream<Int>.Continuation?
     private var isStreamActive = true
-    private(set) lazy var countStream: AsyncStream<Int> = {
+    private var _countStream: AsyncStream<Int>?
+    var countStream: AsyncStream<Int> {
+        if let stream = _countStream {
+            return stream
+        }
+        
         var continuation: AsyncStream<Int>.Continuation!
         let stream = AsyncStream<Int> { cont in
             continuation = cont
             // Send initial zero count
             cont.yield(0)
         }
+        self._countStream = stream
         self.continuation = continuation
         return stream
-    }()
+    }
     
     // Current value cache
     private var currentCount: Int = 0
@@ -115,7 +121,7 @@ actor ObjectCountFetcher<T: NSManagedObject>: Sendable {
         self.continuation = newContinuation
         
         // Store and return the new stream
-        countStream = newStream
+        _countStream = newStream
         return newStream
     }
     

@@ -68,8 +68,8 @@ extension DependencyValues {
     }
 }
 
-#if DEBUG
+//#if DEBUG
 extension String {
     static let defaultContainerName = "sharing.core_data.testValue"
 }
-#endif
+//#endif

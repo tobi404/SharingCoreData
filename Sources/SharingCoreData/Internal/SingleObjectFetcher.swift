@@ -17,16 +17,23 @@ actor SingleObjectFetcher<T: NSManagedObject & Identifiable>: Sendable {
     // AsyncStream properties
     private var continuation: AsyncStream<T?>.Continuation?
     private var isStreamActive = true
-    private(set) lazy var objectStream: AsyncStream<T?> = {
+    private var _objectStream: AsyncStream<T?>?
+    var objectStream: AsyncStream<T?> {
+        if let _objectStream {
+            return _objectStream
+        }
+        
         var continuation: AsyncStream<T?>.Continuation!
         let stream = AsyncStream<T?> { cont in
             continuation = cont
             // Send initial nil
             cont.yield(nil)
         }
+        
+        self._objectStream = stream
         self.continuation = continuation
         return stream
-    }()
+    }
     
     // Current value cache
     private var currentObject: T?
@@ -138,7 +145,7 @@ actor SingleObjectFetcher<T: NSManagedObject & Identifiable>: Sendable {
         self.continuation = newContinuation
         
         // Store and return the new stream
-        objectStream = newStream
+        _objectStream = newStream
         return newStream
     }
     

@@ -17,16 +17,22 @@ actor ObjectFetcher<T: NSManagedObject>: Sendable {
     // AsyncStream properties
     private var continuation: AsyncStream<[T]>.Continuation?
     private var isStreamActive = true
-    private(set) lazy var objectsStream: AsyncStream<[T]> = {
+    private var _objectsStream: AsyncStream<[T]>?
+    var objectsStream: AsyncStream<[T]> {
+        if let _objectsStream {
+            return _objectsStream
+        }
+        
         var continuation: AsyncStream<[T]>.Continuation!
         let stream = AsyncStream<[T]> { cont in
             continuation = cont
             // Send initial empty array
             cont.yield([])
         }
+        self._objectsStream = stream
         self.continuation = continuation
         return stream
-    }()
+    }
     
     // Current value cache
     private var currentObjects: [T] = []
@@ -108,7 +114,7 @@ actor ObjectFetcher<T: NSManagedObject>: Sendable {
         self.continuation = newContinuation
         
         // Store and return the new stream
-        objectsStream = newStream
+        _objectsStream = newStream
         return newStream
     }
     
@@ -116,5 +122,9 @@ actor ObjectFetcher<T: NSManagedObject>: Sendable {
     
     func objects() -> [T] {
         return currentObjects
+    }
+    
+    func refresh(results: [NSManagedObject]) {
+        results.forEach { context.refresh($0, mergeChanges: true) }
     }
 }

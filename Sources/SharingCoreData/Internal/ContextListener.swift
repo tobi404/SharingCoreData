@@ -17,6 +17,7 @@ actor ContextListener<T: NSManagedObject>: Sendable {
     private let onChange: @Sendable (ChangeType) -> Void
     private let context: NSManagedObjectContext
     private var notificationToken: NSObjectProtocol?
+    private var forceRefreshToken: NSObjectProtocol?
     
     init(
         context: NSManagedObjectContext,
@@ -29,6 +30,10 @@ actor ContextListener<T: NSManagedObject>: Sendable {
     
     deinit {
         if let token = notificationToken {
+            NotificationCenter.default.removeObserver(token)
+        }
+        
+        if let token = forceRefreshToken {
             NotificationCenter.default.removeObserver(token)
         }
     }
@@ -48,6 +53,18 @@ actor ContextListener<T: NSManagedObject>: Sendable {
                 if let changeType = await self.processContextChange(notification: notification) {
                     onChangeHandler(changeType)
                 }
+            }
+        }
+        
+        forceRefreshToken = NotificationCenter.default.addObserver(
+            forName: .forceReloadData,
+            object: nil,
+            queue: nil
+        ) { [weak self] notification in
+            guard let self = self else { return }
+            
+            Task {
+                onChangeHandler(.updated)
             }
         }
     }
@@ -79,4 +96,8 @@ actor ContextListener<T: NSManagedObject>: Sendable {
         
         return nil
     }
+}
+
+public extension Notification.Name {
+    static let forceReloadData = Notification.Name("force_reload_data")
 }
