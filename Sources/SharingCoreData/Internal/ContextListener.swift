@@ -9,7 +9,8 @@ import Dependencies
 @preconcurrency import CoreData
 @preconcurrency import CloudKit
 
-actor ContextListener<T: NSManagedObject>: Sendable {
+@MainActor
+final class ContextListener<T: NSManagedObject>: Sendable {
     enum ChangeType: Sendable {
         case inserted
         case deleted
@@ -30,7 +31,7 @@ actor ContextListener<T: NSManagedObject>: Sendable {
     ) {
         self.context = context
         self.onChange = onChange
-        Task { await self.startObserving() }
+        Task { @MainActor in self.startObserving() }
     }
     
     deinit {
@@ -56,10 +57,13 @@ actor ContextListener<T: NSManagedObject>: Sendable {
             object: context,
             queue: nil
         ) { [weak self] notification in
-            guard let self = self else { return }
+            let inserts = notification.userInfo?[NSInsertedObjectsKey] as? Set<NSManagedObject>
+            let deletes = notification.userInfo?[NSDeletedObjectsKey] as? Set<NSManagedObject>
+            let updates = notification.userInfo?[NSUpdatedObjectsKey] as? Set<NSManagedObject>
             
-            Task {
-                if let changeType = await self.processContextChange(notification: notification) {
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                if let changeType = self.determineChangeType(inserts: inserts, deletes: deletes, updates: updates) {
                     onChangeHandler(changeType)
                 }
             }
@@ -69,9 +73,7 @@ actor ContextListener<T: NSManagedObject>: Sendable {
             forName: .forceReloadData,
             object: nil,
             queue: nil
-        ) { [weak self] notification in
-            guard let self = self else { return }
-            
+        ) { notification in
             Task {
                 onChangeHandler(.updated)
             }
@@ -104,28 +106,21 @@ actor ContextListener<T: NSManagedObject>: Sendable {
         }
     }
     
-    private func processContextChange(notification: Notification) -> ChangeType? {
-        guard let userInfo = notification.userInfo else { return nil }
-        
+    private func determineChangeType(
+        inserts: Set<NSManagedObject>?,
+        deletes: Set<NSManagedObject>?,
+        updates: Set<NSManagedObject>?
+    ) -> ChangeType? {
         // Check if any inserted/deleted/updated objects are of type T
-        if
-            let inserts = userInfo[NSInsertedObjectsKey] as? Set<NSManagedObject>,
-            inserts.contains(where: { $0 is T })
-        {
+        if let inserts, inserts.contains(where: { $0 is T }) {
             return .inserted
         }
         
-        if
-            let deletes = userInfo[NSDeletedObjectsKey] as? Set<NSManagedObject>,
-            deletes.contains(where: { $0 is T })
-        {
+        if let deletes, deletes.contains(where: { $0 is T }) {
             return .deleted
         }
         
-        if
-            let updates = userInfo[NSUpdatedObjectsKey] as? Set<NSManagedObject>,
-            updates.contains(where: { $0 is T })
-        {
+        if let updates, updates.contains(where: { $0 is T }) {
             return .updated
         }
         
@@ -136,7 +131,6 @@ actor ContextListener<T: NSManagedObject>: Sendable {
     private func processPersistentHistory(for event: NSPersistentCloudKitContainer.Event) {
         @Dependency(\.persistentContainer) var container
         
-        let storeIdentifier = event.storeIdentifier
         let backgroundContext = container.newBackgroundContext()
         let lastToken = self.lastToken ?? loadHistoryToken()
         
@@ -158,14 +152,14 @@ actor ContextListener<T: NSManagedObject>: Sendable {
                         
                         guard entityName == String(describing: T.self) else { continue }
                         
-                        Task {
+                        Task { @MainActor in
                             switch change.changeType {
                             case .insert:
-                                await throttleChange(.inserted)
+                                self.throttleChange(.inserted)
                             case .update:
-                                await throttleChange(.updated)
+                                self.throttleChange(.updated)
                             case .delete:
-                                await throttleChange(.deleted)
+                                self.throttleChange(.deleted)
                             @unknown default:
                                 break
                             }
@@ -174,9 +168,9 @@ actor ContextListener<T: NSManagedObject>: Sendable {
                 }
                 
                 if let newToken = transactions.last?.token {
-                    Task {
-                        await self.lastToken = newToken
-                        await self.saveHistoryToken(newToken)
+                    Task { @MainActor in
+                        self.lastToken = newToken
+                        self.saveHistoryToken(newToken)
                     }
                 }
             } catch {
@@ -190,7 +184,7 @@ actor ContextListener<T: NSManagedObject>: Sendable {
         throttleTask = Task { [weak self] in
             do {
                 try await Task.sleep(nanoseconds: NSEC_PER_SEC * 1)
-                await self?.onChange(changeType)
+                self?.onChange(changeType)
                 print("💬 AfterThrottle:", changeType)
             } catch {
                 // Task cancelled, ignore

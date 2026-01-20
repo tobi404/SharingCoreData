@@ -117,8 +117,8 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
         context: LoadContext<[Object]>,
         continuation: LoadContinuation<[Object]>
     ) {
-        Task {
-            let objects = await objectFetcher.objects()
+        Task { @MainActor in
+            let objects = objectFetcher.objects()
             continuation.resume(returning: objects)
         }
     }
@@ -127,15 +127,15 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
         context: LoadContext<[Object]>,
         subscriber: SharedSubscriber<[Object]>
     ) -> SharedSubscription {
-        Task {
-            for await objects in await objectFetcher.objectsStream {
+        Task { @MainActor in
+            for await objects in objectFetcher.objectsStream {
                 subscriber.yield(objects)
             }
         }
         
         return SharedSubscription {
-            Task {
-                await objectFetcher.cancelStream()
+            Task { @MainActor in
+                objectFetcher.cancelStream()
             }
         }
     }
@@ -183,8 +183,8 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
         context: LoadContext<Object?>,
         continuation: LoadContinuation<Object?>
     ) {
-        Task {
-            if let object = await objectFetcher.object() {
+        Task { @MainActor in
+            if let object = objectFetcher.object() {
                 continuation.resume(returning: object)
             } else {
                 continuation.resumeReturningInitialValue()
@@ -196,15 +196,15 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
         context: LoadContext<Object?>,
         subscriber: SharedSubscriber<Object?>
     ) -> SharedSubscription {
-        Task {
-            for await object in await objectFetcher.objectStream {
+        Task { @MainActor in
+            for await object in objectFetcher.objectStream {
                 subscriber.yield(object)
             }
         }
         
         return SharedSubscription {
-            Task {
-                await objectFetcher.cancelStream()
+            Task { @MainActor in
+                objectFetcher.cancelStream()
             }
         }
     }
@@ -242,8 +242,8 @@ public struct FetchCountKey<Object: NSManagedObject>: SharedReaderKey {
         context: LoadContext<Int>,
         continuation: LoadContinuation<Int>
     ) {
-        Task {
-            let count = await countFetcher.count()
+        Task { @MainActor in
+            let count = countFetcher.count()
             continuation.resume(returning: count)
         }
     }
@@ -252,15 +252,15 @@ public struct FetchCountKey<Object: NSManagedObject>: SharedReaderKey {
         context: LoadContext<Int>,
         subscriber: SharedSubscriber<Int>
     ) -> SharedSubscription {
-        Task {
-            for await count in await countFetcher.countStream {
+        Task { @MainActor in
+            for await count in countFetcher.countStream {
                 subscriber.yield(count)
             }
         }
         
         return SharedSubscription {
-            Task {
-                await countFetcher.cancelStream()
+            Task { @MainActor in
+                countFetcher.cancelStream()
             }
         }
     }
@@ -295,8 +295,8 @@ public struct FetchGroupedObjectKey<Parent: NSManagedObject, Child: NSManagedObj
         context: LoadContext<[Parent: [Child]]>,
         continuation: LoadContinuation<[Parent: [Child]]>
     ) {
-        Task {
-            let groupedObjects = await objectFetcher.groupedObjects()
+        Task { @MainActor in
+            let groupedObjects = objectFetcher.groupedObjects()
             continuation.resume(returning: groupedObjects)
         }
     }
@@ -305,15 +305,15 @@ public struct FetchGroupedObjectKey<Parent: NSManagedObject, Child: NSManagedObj
         context: LoadContext<[Parent: [Child]]>,
         subscriber: SharedSubscriber<[Parent: [Child]]>
     ) -> SharedSubscription {
-        Task {
-            for await groupedObjects in await objectFetcher.groupedObjectsStream {
+        Task { @MainActor in
+            for await groupedObjects in objectFetcher.groupedObjectsStream {
                 subscriber.yield(groupedObjects)
             }
         }
         
         return SharedSubscription {
-            Task {
-                await objectFetcher.cancelStream()
+            Task { @MainActor in
+                objectFetcher.cancelStream()
             }
         }
     }
@@ -360,4 +360,5 @@ public struct FetchRequestID: Hashable {
 
 extension NSManagedObject: @unchecked @retroactive Sendable {}
 extension NSPredicate: @unchecked @retroactive Sendable {}
-extension KeyPath: @unchecked Sendable where Root: Sendable, Value: Sendable {}
+extension KeyPath: @unchecked @retroactive Sendable where Root: Sendable, Value: Sendable {}
+extension NSFetchRequest: @unchecked @retroactive Sendable {}

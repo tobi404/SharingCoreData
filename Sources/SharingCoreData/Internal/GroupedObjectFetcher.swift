@@ -7,12 +7,13 @@
 
 @preconcurrency import CoreData
 
-actor GroupedObjectFetcher<T: NSManagedObject, C: NSManagedObject>: Sendable {
+@MainActor
+final class GroupedObjectFetcher<T: NSManagedObject, C: NSManagedObject>: Sendable {
     // MARK: - Properties
     
-    private let groupRequest: NSFetchRequest<T>
-    private let childRequest: @Sendable (T) -> NSFetchRequest<C>
-    private let context: NSManagedObjectContext
+    nonisolated private let groupRequest: NSFetchRequest<T>
+    nonisolated private let childRequest: @Sendable (T) -> NSFetchRequest<C>
+    nonisolated private let context: NSManagedObjectContext
     private var parentListener: ContextListener<T>?  // NEW: Listener for parent type
     private var childListener: ContextListener<C>?   // RENAMED: Listener for child type
     
@@ -42,7 +43,7 @@ actor GroupedObjectFetcher<T: NSManagedObject, C: NSManagedObject>: Sendable {
     
     // MARK: - Initialization
     
-    init(
+    nonisolated init(
         groupRequest: NSFetchRequest<T>,
         childRequest: @escaping @Sendable (T) -> NSFetchRequest<C>,
         context: NSManagedObjectContext
@@ -51,10 +52,10 @@ actor GroupedObjectFetcher<T: NSManagedObject, C: NSManagedObject>: Sendable {
         self.childRequest = childRequest
         self.context = context
         
-        Task {
-            _ = await groupedObjectsStream
-            await setupListeners()
-            await fetch()
+        Task { @MainActor in
+            _ = self.groupedObjectsStream
+            await self.setupListeners()
+            await self.fetch()
         }
     }
     
@@ -93,24 +94,22 @@ actor GroupedObjectFetcher<T: NSManagedObject, C: NSManagedObject>: Sendable {
     
     // MARK: - Fetching
     
-    @MainActor
     func fetch() async {
-        guard await isStreamActive else { return }
+        guard isStreamActive else { return }
         
         do {
             var group = [T: [C]]()
-            let results = try await context.fetch(groupRequest)
+            let results = try context.fetch(groupRequest)
             for result in results {
-                guard let result = result as? T else { continue }
-                let childRequst = await childRequest(result)
-                let childs = try await context.fetch(childRequst)
+                let childRequst = childRequest(result)
+                let childs = try context.fetch(childRequst)
                 group[result] = childs
             }
-            await setCurrentGroupedObjects(group)
-            await continuation?.yield(group)
+            setCurrentGroupedObjects(group)
+            continuation?.yield(group)
         } catch {
             print("Error fetching grouped objects: \(error)")
-            await continuation?.yield([:])
+            continuation?.yield([:])
         }
     }
     

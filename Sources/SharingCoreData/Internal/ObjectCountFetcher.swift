@@ -7,11 +7,12 @@
 
 @preconcurrency import CoreData
 
-actor ObjectCountFetcher<T: NSManagedObject>: Sendable {
+@MainActor
+final class ObjectCountFetcher<T: NSManagedObject>: Sendable {
     // MARK: - Properties
     
-    private let fetchRequest: NSFetchRequest<T>
-    private let context: NSManagedObjectContext
+    nonisolated private let fetchRequest: NSFetchRequest<T>
+    nonisolated private let context: NSManagedObjectContext
     private var listener: ContextListener<T>?
     
     // AsyncStream properties
@@ -39,17 +40,17 @@ actor ObjectCountFetcher<T: NSManagedObject>: Sendable {
     
     // MARK: - Initialization
     
-    init(
+    nonisolated init(
         fetchRequest: NSFetchRequest<T>,
         context: NSManagedObjectContext
     ) {
         self.fetchRequest = fetchRequest
         self.context = context
         
-        Task {
-            _ = await countStream
-            await setupListener()
-            await fetchCount()
+        Task { @MainActor in
+            _ = self.countStream
+            await self.setupListener()
+            await self.fetchCount()
         }
     }
     
@@ -75,24 +76,23 @@ actor ObjectCountFetcher<T: NSManagedObject>: Sendable {
     
     // MARK: - Fetching
     
-    @MainActor
     func fetchCount() async {
-        guard await isStreamActive else { return }
+        guard isStreamActive else { return }
         
         do {
             // Create a copy of the fetch request to avoid modifying the original
-            let countRequest = await fetchRequest.copy() as! NSFetchRequest<T>
+            let countRequest = fetchRequest.copy() as! NSFetchRequest<T>
             
             // Set result type to count only for efficiency
             countRequest.resultType = .countResultType
             
             // Execute the count request
-            let countResult = try await context.count(for: countRequest)
-            await setCount(countResult)
-            await continuation?.yield(countResult)
+            let countResult = try context.count(for: countRequest)
+            setCount(countResult)
+            continuation?.yield(countResult)
         } catch {
             print("Error fetching count: \(error)")
-            await continuation?.yield(0)
+            continuation?.yield(0)
         }
     }
     

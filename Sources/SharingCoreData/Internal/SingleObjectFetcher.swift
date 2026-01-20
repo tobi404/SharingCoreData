@@ -7,11 +7,12 @@
 
 @preconcurrency import CoreData
 
-actor SingleObjectFetcher<T: NSManagedObject & Identifiable>: Sendable {
+@MainActor
+final class SingleObjectFetcher<T: NSManagedObject & Identifiable>: Sendable {
     // MARK: - Properties
     
-    private let fetchRequest: NSFetchRequest<T>
-    private let context: NSManagedObjectContext
+    nonisolated private let fetchRequest: NSFetchRequest<T>
+    nonisolated private let context: NSManagedObjectContext
     private var listener: ContextListener<T>?
     
     // AsyncStream properties
@@ -40,7 +41,7 @@ actor SingleObjectFetcher<T: NSManagedObject & Identifiable>: Sendable {
     
     // MARK: - Initialization
     
-    init(
+    nonisolated init(
         fetchRequest: NSFetchRequest<T>,
         context: NSManagedObjectContext
     ) {
@@ -51,10 +52,10 @@ actor SingleObjectFetcher<T: NSManagedObject & Identifiable>: Sendable {
         self.fetchRequest = limitedRequest
         self.context = context
         
-        Task {
-            _ = await objectStream
-            await setupListener()
-            await fetch()
+        Task { @MainActor in
+            _ = self.objectStream
+            await self.setupListener()
+            await self.fetch()
         }
     }
     
@@ -66,15 +67,15 @@ actor SingleObjectFetcher<T: NSManagedObject & Identifiable>: Sendable {
         ) { [weak self] changeType in
             guard let self = self else { return }
             
-            Task {
+            Task { @MainActor in
                 switch changeType {
                 case .inserted, .updated:
                     // Refetch the object on insert or update
                     await self.fetch()
                 case .deleted:
                     // If our object was deleted, set to nil
-                    if await self.currentObject != nil {
-                        await setToNil()
+                    if self.object() != nil {
+                        self.setToNil()
                     }
                 }
             }
@@ -94,24 +95,23 @@ actor SingleObjectFetcher<T: NSManagedObject & Identifiable>: Sendable {
     
     // MARK: - Fetching
     
-    @MainActor
     func fetch() async {
-        guard await isStreamActive else { return }
+        guard isStreamActive else { return }
         
         do {
-            let results = try await context.fetch(fetchRequest)
+            let results = try context.fetch(fetchRequest)
             let object = results.first
             
             // Only yield if the object is different (by objectID)
-            if await currentObject != object {
-                await setObject(object)
-                await continuation?.yield(object)
-            } else if let currentObject = await currentObject, let object {
+            if currentObject != object {
+                setObject(object)
+                continuation?.yield(object)
+            } else if let currentObject = currentObject, let object {
                 // If same objectID but potentially updated values, check if we need to update
                 // This is a simple approach - in a real app you might want to compare specific properties
                 if currentObject.isUpdated {
-                    await setObject(object)
-                    await continuation?.yield(object)
+                    setObject(object)
+                    continuation?.yield(object)
                 }
             }
         } catch {

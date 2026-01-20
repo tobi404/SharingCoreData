@@ -7,11 +7,12 @@
 
 @preconcurrency import CoreData
 
-actor ObjectFetcher<T: NSManagedObject>: Sendable {
+@MainActor
+final class ObjectFetcher<T: NSManagedObject>: Sendable {
     // MARK: - Properties
     
-    private let fetchRequest: NSFetchRequest<T>
-    private let context: NSManagedObjectContext
+    nonisolated private let fetchRequest: NSFetchRequest<T>
+    nonisolated private let context: NSManagedObjectContext
     private var listener: ContextListener<T>?
     
     // AsyncStream properties
@@ -39,17 +40,17 @@ actor ObjectFetcher<T: NSManagedObject>: Sendable {
     
     // MARK: - Initialization
     
-    init(
+    nonisolated init(
         fetchRequest: NSFetchRequest<T>,
         context: NSManagedObjectContext
     ) {
         self.fetchRequest = fetchRequest
         self.context = context
         
-        Task {
-            _ = await objectsStream
-            await setupListener()
-            await fetch()
+        Task { @MainActor in
+            _ = self.objectsStream
+            await self.setupListener()
+            await self.fetch()
         }
     }
     
@@ -75,17 +76,16 @@ actor ObjectFetcher<T: NSManagedObject>: Sendable {
     
     // MARK: - Fetching
     
-    @MainActor
     func fetch() async {
-        guard await isStreamActive else { return }
+        guard isStreamActive else { return }
         
         do {
-            let results = try await context.fetch(fetchRequest)
-            await setCurrentObjects(results)
-            await continuation?.yield(results)
+            let results = try context.fetch(fetchRequest)
+            setCurrentObjects(results)
+            continuation?.yield(results)
         } catch {
             print("Error fetching objects: \(error)")
-            await continuation?.yield([])
+            continuation?.yield([])
         }
     }
     
