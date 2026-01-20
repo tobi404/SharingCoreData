@@ -7,26 +7,27 @@
 
 @preconcurrency import CoreData
 
-actor GroupedObjectFetcher<T: NSManagedObject, KeyType: Sendable & Hashable>: Sendable {
+actor GroupedObjectFetcher<T: NSManagedObject, C: NSManagedObject>: Sendable {
     // MARK: - Properties
     
-    private let fetchRequest: NSFetchRequest<T>
+    private let groupRequest: NSFetchRequest<T>
+    private let childRequest: @Sendable (T) -> NSFetchRequest<C>
     private let context: NSManagedObjectContext
-    private let keyPath: KeyPath<T, KeyType?>
-    private var listener: ContextListener<T>?
+    private var parentListener: ContextListener<T>?  // NEW: Listener for parent type
+    private var childListener: ContextListener<C>?   // RENAMED: Listener for child type
     
     // AsyncStream properties
     private var isStreamActive = true
-    private var continuation: AsyncStream<[KeyType: [T]]>.Continuation?
-    private var _groupedObjectsStream: AsyncStream<[KeyType: [T]]>?
-    var groupedObjectsStream: AsyncStream<[KeyType: [T]]> {
+    private var continuation: AsyncStream<[T: [C]]>.Continuation?
+    private var _groupedObjectsStream: AsyncStream<[T: [C]]>?
+    var groupedObjectsStream: AsyncStream<[T: [C]]> {
         if let stream = _groupedObjectsStream {
             return stream
         }
         
         // Initialize on first access
-        var cont: AsyncStream<[KeyType: [T]]>.Continuation!
-        let stream = AsyncStream<[KeyType: [T]]> { continuation in
+        var cont: AsyncStream<[T: [C]]>.Continuation!
+        let stream = AsyncStream<[T: [C]]> { continuation in
             cont = continuation
             continuation.yield([:])
         }
@@ -37,30 +38,31 @@ actor GroupedObjectFetcher<T: NSManagedObject, KeyType: Sendable & Hashable>: Se
         return stream
     }
     // Current value cache
-    private var currentGroupedObjects: [KeyType: [T]] = [:]
+    private var currentGroupedObjects: [T: [C]] = [:]
     
     // MARK: - Initialization
     
     init(
-        fetchRequest: NSFetchRequest<T>,
-        context: NSManagedObjectContext,
-        keyPath: KeyPath<T, KeyType?>
+        groupRequest: NSFetchRequest<T>,
+        childRequest: @escaping @Sendable (T) -> NSFetchRequest<C>,
+        context: NSManagedObjectContext
     ) {
-        self.fetchRequest = fetchRequest
+        self.groupRequest = groupRequest
+        self.childRequest = childRequest
         self.context = context
-        self.keyPath = keyPath
         
         Task {
             _ = await groupedObjectsStream
-            await setupListener()
+            await setupListeners()
             await fetch()
         }
     }
     
     // MARK: - Setup
     
-    private func setupListener() async {
-        let contextListener = ContextListener<T>(
+    private func setupListeners() async {
+        // Listen for changes to PARENT objects (e.g., CardCollection)
+        let parentContextListener = ContextListener<T>(
             context: context
         ) { [weak self] _ in
             guard let self = self else { return }
@@ -70,10 +72,22 @@ actor GroupedObjectFetcher<T: NSManagedObject, KeyType: Sendable & Hashable>: Se
             }
         }
         
-        self.listener = contextListener
+        // Listen for changes to CHILD objects (e.g., Card)
+        let childContextListener = ContextListener<C>(
+            context: context
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            
+            Task {
+                await self.fetch()
+            }
+        }
+        
+        self.parentListener = parentContextListener
+        self.childListener = childContextListener
     }
     
-    private func setCurrentGroupedObjects(_ newValue: [KeyType: [T]]) {
+    private func setCurrentGroupedObjects(_ newValue: [T: [C]]) {
         currentGroupedObjects = newValue
     }
     
@@ -84,10 +98,16 @@ actor GroupedObjectFetcher<T: NSManagedObject, KeyType: Sendable & Hashable>: Se
         guard await isStreamActive else { return }
         
         do {
-            let results = try await context.fetch(fetchRequest)
-            let grouped = await groupTheObjects(results: results)
-            await setCurrentGroupedObjects(grouped)
-            await continuation?.yield(grouped)
+            var group = [T: [C]]()
+            let results = try await context.fetch(groupRequest)
+            for result in results {
+                guard let result = result as? T else { continue }
+                let childRequst = await childRequest(result)
+                let childs = try await context.fetch(childRequst)
+                group[result] = childs
+            }
+            await setCurrentGroupedObjects(group)
+            await continuation?.yield(group)
         } catch {
             print("Error fetching grouped objects: \(error)")
             await continuation?.yield([:])
@@ -102,7 +122,7 @@ actor GroupedObjectFetcher<T: NSManagedObject, KeyType: Sendable & Hashable>: Se
         continuation = nil
     }
     
-    func createNewStream() -> AsyncStream<[KeyType: [T]]> {
+    func createNewStream() -> AsyncStream<[T: [C]]> {
         // Cancel existing stream if active
         if isStreamActive {
             cancelStream()
@@ -110,8 +130,8 @@ actor GroupedObjectFetcher<T: NSManagedObject, KeyType: Sendable & Hashable>: Se
         
         // Create new stream
         isStreamActive = true
-        var newContinuation: AsyncStream<[KeyType: [T]]>.Continuation!
-        let newStream = AsyncStream<[KeyType: [T]]> { cont in
+        var newContinuation: AsyncStream<[T: [C]]>.Continuation!
+        let newStream = AsyncStream<[T: [C]]> { cont in
             newContinuation = cont
             // Send current objects immediately
             cont.yield(currentGroupedObjects)
@@ -125,16 +145,7 @@ actor GroupedObjectFetcher<T: NSManagedObject, KeyType: Sendable & Hashable>: Se
     
     // MARK: - Convenience Methods
     
-    func groupedObjects() -> [KeyType: [T]] {
+    func groupedObjects() -> [T: [C]] {
         currentGroupedObjects
-    }
-    
-    func groupTheObjects(results: [T]) -> [KeyType: [T]] {
-        var dict = [KeyType: [T]]()
-        for object in results {
-            guard let key = object[keyPath: keyPath] else { continue }
-            dict[key, default: []].append(object)
-        }
-        return dict
     }
 }

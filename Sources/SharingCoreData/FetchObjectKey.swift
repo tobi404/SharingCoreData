@@ -28,7 +28,8 @@ extension SharedReaderKey {
         for object: Value.Type,
         predicate: NSPredicate? = nil,
         descriptors: [NSSortDescriptor] = [],
-        relationshipKeyPathsForPrefetching: [String] = []
+        relationshipKeyPathsForPrefetching: [String] = [],
+        batchSize: Int? = nil
     ) -> Self
     where Self == FetchAllObjectKey<Value>.Default {
         Self[
@@ -36,7 +37,8 @@ extension SharedReaderKey {
                 for: object,
                 predicate: predicate,
                 sort: descriptors,
-                relationshipKeyPathsForPrefetching: relationshipKeyPathsForPrefetching
+                relationshipKeyPathsForPrefetching: relationshipKeyPathsForPrefetching,
+                batchSize: batchSize
             ),
             default: []
         ]
@@ -56,21 +58,15 @@ extension SharedReaderKey {
         ]
     }
     
-    public static func fetchGrouped<Value: NSManagedObject, KeyType: Hashable>(
-        for object: Value.Type,
-        groupBy keyPath: KeyPath<Value, KeyType?>,
-        predicate: NSPredicate? = nil,
-        descriptors: [NSSortDescriptor] = [],
-        relationshipKeyPathsForPrefetching: [String] = []
+    public static func fetchGrouped<Parent: NSManagedObject, Child: NSManagedObject>(
+        groupRequest: NSFetchRequest<Parent>,
+        childRequest: @escaping @Sendable (Parent) -> NSFetchRequest<Child>
     ) -> Self
-    where Self == FetchGroupedObjectKey<Value, KeyType>.Default {
+    where Self == FetchGroupedObjectKey<Parent, Child>.Default {
         Self[
             FetchGroupedObjectKey(
-                for: object,
-                keyPath: keyPath,
-                predicate: predicate,
-                sort: descriptors,
-                relationshipKeyPathsForPrefetching: relationshipKeyPathsForPrefetching
+                group: groupRequest,
+                child: childRequest
             ),
             default: [:]
         ]
@@ -95,7 +91,8 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
         for object: Object.Type,
         predicate: NSPredicate? = nil,
         sort: [NSSortDescriptor],
-        relationshipKeyPathsForPrefetching: [String]
+        relationshipKeyPathsForPrefetching: [String],
+        batchSize: Int? = nil
     ) {
         @Dependency(\.persistentContainer) var container
         
@@ -103,6 +100,10 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
         fetchRequest.predicate = predicate
         fetchRequest.sortDescriptors = sort
         fetchRequest.relationshipKeyPathsForPrefetching = relationshipKeyPathsForPrefetching
+        
+        if let batchSize {
+            fetchRequest.fetchBatchSize = batchSize
+        }
         
         self.container = container
         self.fetchRequest = fetchRequest
@@ -163,6 +164,7 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
         
         let fetchRequest = Object.fetchRequest() as! NSFetchRequest<Object>
         fetchRequest.predicate = predicate
+        
         if let sort {
             fetchRequest.sortDescriptors = [sort]
         } else {
@@ -264,6 +266,59 @@ public struct FetchCountKey<Object: NSManagedObject>: SharedReaderKey {
     }
 }
 
+// MARK: - FetchGrouped
+
+public struct FetchGroupedObjectKey<Parent: NSManagedObject, Child: NSManagedObject>: SharedReaderKey {
+    private let container: NSPersistentContainer
+    private let parentRequest: NSFetchRequest<Parent>
+    private let objectFetcher: GroupedObjectFetcher<Parent, Child>
+    
+    public typealias Value = [Parent: [Child]]
+    public typealias ID = FetchRequestID
+    
+    public var id: ID {
+        FetchRequestID(from: parentRequest)
+    }
+    
+    init(
+        group parent: NSFetchRequest<Parent>,
+        child: @escaping @Sendable (Parent) -> NSFetchRequest<Child>
+    ) {
+        @Dependency(\.persistentContainer) var container
+        
+        self.container = container
+        self.parentRequest = parent
+        self.objectFetcher = GroupedObjectFetcher<Parent, Child>(groupRequest: parent, childRequest: child, context: container.viewContext)
+    }
+    
+    public func load(
+        context: LoadContext<[Parent: [Child]]>,
+        continuation: LoadContinuation<[Parent: [Child]]>
+    ) {
+        Task {
+            let groupedObjects = await objectFetcher.groupedObjects()
+            continuation.resume(returning: groupedObjects)
+        }
+    }
+    
+    public func subscribe(
+        context: LoadContext<[Parent: [Child]]>,
+        subscriber: SharedSubscriber<[Parent: [Child]]>
+    ) -> SharedSubscription {
+        Task {
+            for await groupedObjects in await objectFetcher.groupedObjectsStream {
+                subscriber.yield(groupedObjects)
+            }
+        }
+        
+        return SharedSubscription {
+            Task {
+                await objectFetcher.cancelStream()
+            }
+        }
+    }
+}
+
 // MARK: - FetchRequestID
 
 public struct FetchRequestID: Hashable {
@@ -297,71 +352,6 @@ public struct FetchRequestID: Hashable {
             }
         } else {
             self.sortDescriptorRepresentations = []
-        }
-    }
-}
-
-// MARK: - FetchGrouped
-
-public struct FetchGroupedObjectKey<Object: NSManagedObject, KeyType: Hashable & Sendable>: SharedReaderKey {
-    private let container: NSPersistentContainer
-    private let fetchRequest: NSFetchRequest<Object>
-    private let objectFetcher: GroupedObjectFetcher<Object, KeyType>
-    
-    public typealias Value = [KeyType: [Object]]
-    public typealias ID = FetchRequestID
-    
-    public var id: ID {
-        FetchRequestID(from: fetchRequest)
-    }
-    
-    init(
-        for object: Object.Type,
-        keyPath: KeyPath<Object, KeyType?>,
-        predicate: NSPredicate? = nil,
-        sort: [NSSortDescriptor],
-        relationshipKeyPathsForPrefetching: [String]
-    ) {
-        @Dependency(\.persistentContainer) var container
-        
-        let fetchRequest = Object.fetchRequest() as! NSFetchRequest<Object>
-        fetchRequest.predicate = predicate
-        fetchRequest.sortDescriptors = sort
-        fetchRequest.relationshipKeyPathsForPrefetching = relationshipKeyPathsForPrefetching
-        
-        self.container = container
-        self.fetchRequest = fetchRequest
-        self.objectFetcher = GroupedObjectFetcher<Object, KeyType>(
-            fetchRequest: fetchRequest,
-            context: container.viewContext,
-            keyPath: keyPath
-        )
-    }
-    
-    public func load(
-        context: LoadContext<[KeyType: [Object]]>,
-        continuation: LoadContinuation<[KeyType: [Object]]>
-    ) {
-        Task {
-            let groupedObjects = await objectFetcher.groupedObjects()
-            continuation.resume(returning: groupedObjects)
-        }
-    }
-    
-    public func subscribe(
-        context: LoadContext<[KeyType: [Object]]>,
-        subscriber: SharedSubscriber<[KeyType: [Object]]>
-    ) -> SharedSubscription {
-        Task {
-            for await groupedObjects in await objectFetcher.groupedObjectsStream {
-                subscriber.yield(groupedObjects)
-            }
-        }
-        
-        return SharedSubscription {
-            Task {
-                await objectFetcher.cancelStream()
-            }
         }
     }
 }
