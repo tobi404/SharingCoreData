@@ -25,13 +25,14 @@ final class ContextListener<T: NSManagedObject>: Sendable {
     private var lastToken: NSPersistentHistoryToken?
     private var throttleTask: Task<Void, Never>? // Throttling task
     
+    @MainActor
     init(
         context: NSManagedObjectContext,
         onChange: @Sendable @escaping (ChangeType) -> Void
     ) {
         self.context = context
         self.onChange = onChange
-        Task { @MainActor in self.startObserving() }
+        Task { self.startObserving() }
     }
     
     deinit {

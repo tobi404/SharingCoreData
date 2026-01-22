@@ -11,9 +11,9 @@
 final class GroupedObjectFetcher<T: NSManagedObject, C: NSManagedObject>: Sendable {
     // MARK: - Properties
     
-    nonisolated private let groupRequest: NSFetchRequest<T>
-    nonisolated private let childRequest: @Sendable (T) -> NSFetchRequest<C>
-    nonisolated private let context: NSManagedObjectContext
+    private let groupRequest: NSFetchRequest<T>
+    private let childRequest: @Sendable (T) -> NSFetchRequest<C>
+    private let context: NSManagedObjectContext
     private var parentListener: ContextListener<T>?  // NEW: Listener for parent type
     private var childListener: ContextListener<C>?   // RENAMED: Listener for child type
     
@@ -43,7 +43,8 @@ final class GroupedObjectFetcher<T: NSManagedObject, C: NSManagedObject>: Sendab
     
     // MARK: - Initialization
     
-    nonisolated init(
+    @MainActor
+    init(
         groupRequest: NSFetchRequest<T>,
         childRequest: @escaping @Sendable (T) -> NSFetchRequest<C>,
         context: NSManagedObjectContext
@@ -52,7 +53,7 @@ final class GroupedObjectFetcher<T: NSManagedObject, C: NSManagedObject>: Sendab
         self.childRequest = childRequest
         self.context = context
         
-        Task { @MainActor in
+        Task {
             _ = self.groupedObjectsStream
             await self.setupListeners()
             await self.fetch()

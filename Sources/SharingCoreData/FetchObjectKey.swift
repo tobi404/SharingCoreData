@@ -107,10 +107,12 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
         
         self.container = container
         self.fetchRequest = fetchRequest
-        self.objectFetcher = ObjectFetcher<Object>(
-            fetchRequest: fetchRequest,
-            context: container.viewContext
-        )
+        self.objectFetcher = MainActor.assumeIsolated {
+            ObjectFetcher<Object>(
+                fetchRequest: fetchRequest,
+                context: container.viewContext
+            )
+        }
     }
     
     public func load(
@@ -173,10 +175,12 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
         
         self.container = container
         self.fetchRequest = fetchRequest
-        self.objectFetcher = SingleObjectFetcher(
-            fetchRequest: fetchRequest,
-            context: container.viewContext
-        )
+        self.objectFetcher = MainActor.assumeIsolated {
+            SingleObjectFetcher(
+                fetchRequest: fetchRequest,
+                context: container.viewContext
+            )
+        }
     }
     
     public func load(
@@ -235,7 +239,9 @@ public struct FetchCountKey<Object: NSManagedObject>: SharedReaderKey {
         
         self.container = container
         self.fetchRequest = fetchRequest
-        self.countFetcher = ObjectCountFetcher(fetchRequest: fetchRequest, context: container.viewContext)
+        self.countFetcher = MainActor.assumeIsolated {
+            ObjectCountFetcher(fetchRequest: fetchRequest, context: container.viewContext)
+        }
     }
     
     public func load(
@@ -288,7 +294,9 @@ public struct FetchGroupedObjectKey<Parent: NSManagedObject, Child: NSManagedObj
         
         self.container = container
         self.parentRequest = parent
-        self.objectFetcher = GroupedObjectFetcher<Parent, Child>(groupRequest: parent, childRequest: child, context: container.viewContext)
+        self.objectFetcher = MainActor.assumeIsolated {
+            GroupedObjectFetcher<Parent, Child>(groupRequest: parent, childRequest: child, context: container.viewContext)
+        }
     }
     
     public func load(
@@ -358,6 +366,10 @@ public struct FetchRequestID: Hashable {
 
 // MARK: - Core Data sendability
 
+// SAFETY: This is a dangerous conformance required for 'swift-sharing' interoperability.
+// NSManagedObjects are NOT thread-safe. They must ONLY be accessed on the actor they were created on (here, @MainActor).
+// The library fetchers are isolated to @MainActor, so as long as these values are consumed on MainActor, it is safe-ish.
+// Accessing properties of these objects on a background thread WILL cause a crash or data corruption.
 extension NSManagedObject: @unchecked @retroactive Sendable {}
 extension NSPredicate: @unchecked @retroactive Sendable {}
 extension KeyPath: @unchecked @retroactive Sendable where Root: Sendable, Value: Sendable {}

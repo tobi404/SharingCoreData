@@ -11,8 +11,8 @@
 final class ObjectFetcher<T: NSManagedObject>: Sendable {
     // MARK: - Properties
     
-    nonisolated private let fetchRequest: NSFetchRequest<T>
-    nonisolated private let context: NSManagedObjectContext
+    private let fetchRequest: NSFetchRequest<T>
+    private let context: NSManagedObjectContext
     private var listener: ContextListener<T>?
     
     // AsyncStream properties
@@ -40,14 +40,15 @@ final class ObjectFetcher<T: NSManagedObject>: Sendable {
     
     // MARK: - Initialization
     
-    nonisolated init(
+    @MainActor
+    init(
         fetchRequest: NSFetchRequest<T>,
         context: NSManagedObjectContext
     ) {
         self.fetchRequest = fetchRequest
         self.context = context
         
-        Task { @MainActor in
+        Task {
             _ = self.objectsStream
             await self.setupListener()
             await self.fetch()
