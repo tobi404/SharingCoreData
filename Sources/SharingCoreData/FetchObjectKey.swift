@@ -78,7 +78,6 @@ extension SharedReaderKey {
 public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
     private let container: NSPersistentContainer
     private let fetchRequest: NSFetchRequest<Object>
-    private let objectFetcher: ObjectFetcher<Object>
     
     public typealias Value = [Object]
     public typealias ID = FetchRequestID
@@ -107,21 +106,23 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
         
         self.container = container
         self.fetchRequest = fetchRequest
-        self.objectFetcher = MainActor.assumeIsolated {
-            ObjectFetcher<Object>(
-                fetchRequest: fetchRequest,
-                context: container.viewContext
-            )
-        }
     }
     
     public func load(
         context: LoadContext<[Object]>,
         continuation: LoadContinuation<[Object]>
     ) {
+        let container = self.container
+        let fetchRequest = self.fetchRequest
+        
         Task { @MainActor in
-            let objects = objectFetcher.objects()
-            continuation.resume(returning: objects)
+            let context = container.viewContext
+            do {
+                let objects = try context.fetch(fetchRequest)
+                continuation.resume(returning: objects)
+            } catch {
+                continuation.resume(returning: [])
+            }
         }
     }
     
@@ -129,16 +130,21 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
         context: LoadContext<[Object]>,
         subscriber: SharedSubscriber<[Object]>
     ) -> SharedSubscription {
-        Task { @MainActor in
+        let container = self.container
+        let fetchRequest = self.fetchRequest
+        
+        let task = Task { @MainActor in
+            let objectFetcher = ObjectFetcher<Object>(
+                fetchRequest: fetchRequest,
+                context: container.viewContext
+            )
             for await objects in objectFetcher.objectsStream {
                 subscriber.yield(objects)
             }
         }
         
         return SharedSubscription {
-            Task { @MainActor in
-                objectFetcher.cancelStream()
-            }
+            task.cancel()
         }
     }
 }
@@ -148,7 +154,6 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
 public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedReaderKey {
     private let container: NSPersistentContainer
     private let fetchRequest: NSFetchRequest<Object>
-    private let objectFetcher: SingleObjectFetcher<Object>
     
     public typealias Value = Object?
     public typealias ID = FetchRequestID
@@ -175,22 +180,29 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
         
         self.container = container
         self.fetchRequest = fetchRequest
-        self.objectFetcher = MainActor.assumeIsolated {
-            SingleObjectFetcher(
-                fetchRequest: fetchRequest,
-                context: container.viewContext
-            )
-        }
     }
     
     public func load(
         context: LoadContext<Object?>,
         continuation: LoadContinuation<Object?>
     ) {
+        let container = self.container
+        let fetchRequest = self.fetchRequest
+        
         Task { @MainActor in
-            if let object = objectFetcher.object() {
-                continuation.resume(returning: object)
-            } else {
+            let context = container.viewContext
+            // Mimic SingleObjectFetcher init logic: limit 1
+            let request = fetchRequest.copy() as! NSFetchRequest<Object>
+            request.fetchLimit = 1
+            
+            do {
+                let results = try context.fetch(request)
+                if let object = results.first {
+                    continuation.resume(returning: object)
+                } else {
+                    continuation.resumeReturningInitialValue()
+                }
+            } catch {
                 continuation.resumeReturningInitialValue()
             }
         }
@@ -200,16 +212,21 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
         context: LoadContext<Object?>,
         subscriber: SharedSubscriber<Object?>
     ) -> SharedSubscription {
-        Task { @MainActor in
+        let container = self.container
+        let fetchRequest = self.fetchRequest
+        
+        let task = Task { @MainActor in
+            let objectFetcher = SingleObjectFetcher(
+                fetchRequest: fetchRequest,
+                context: container.viewContext
+            )
             for await object in objectFetcher.objectStream {
                 subscriber.yield(object)
             }
         }
         
         return SharedSubscription {
-            Task { @MainActor in
-                objectFetcher.cancelStream()
-            }
+            task.cancel()
         }
     }
 }
@@ -219,7 +236,6 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
 public struct FetchCountKey<Object: NSManagedObject>: SharedReaderKey {
     private let container: NSPersistentContainer
     private let fetchRequest: NSFetchRequest<Object>
-    private let countFetcher: ObjectCountFetcher<Object>
     
     public typealias Value = Int
     public typealias ID = FetchRequestID
@@ -239,18 +255,26 @@ public struct FetchCountKey<Object: NSManagedObject>: SharedReaderKey {
         
         self.container = container
         self.fetchRequest = fetchRequest
-        self.countFetcher = MainActor.assumeIsolated {
-            ObjectCountFetcher(fetchRequest: fetchRequest, context: container.viewContext)
-        }
     }
     
     public func load(
         context: LoadContext<Int>,
         continuation: LoadContinuation<Int>
     ) {
+        let container = self.container
+        let fetchRequest = self.fetchRequest
+        
         Task { @MainActor in
-            let count = countFetcher.count()
-            continuation.resume(returning: count)
+            let context = container.viewContext
+            let countRequest = fetchRequest.copy() as! NSFetchRequest<Object>
+            countRequest.resultType = .countResultType
+            
+            do {
+                let count = try context.count(for: countRequest)
+                continuation.resume(returning: count)
+            } catch {
+                continuation.resume(returning: 0)
+            }
         }
     }
     
@@ -258,16 +282,21 @@ public struct FetchCountKey<Object: NSManagedObject>: SharedReaderKey {
         context: LoadContext<Int>,
         subscriber: SharedSubscriber<Int>
     ) -> SharedSubscription {
-        Task { @MainActor in
+        let container = self.container
+        let fetchRequest = self.fetchRequest
+        
+        let task = Task { @MainActor in
+            let countFetcher = ObjectCountFetcher(
+                fetchRequest: fetchRequest,
+                context: container.viewContext
+            )
             for await count in countFetcher.countStream {
                 subscriber.yield(count)
             }
         }
         
         return SharedSubscription {
-            Task { @MainActor in
-                countFetcher.cancelStream()
-            }
+            task.cancel()
         }
     }
 }
@@ -277,7 +306,7 @@ public struct FetchCountKey<Object: NSManagedObject>: SharedReaderKey {
 public struct FetchGroupedObjectKey<Parent: NSManagedObject, Child: NSManagedObject>: SharedReaderKey {
     private let container: NSPersistentContainer
     private let parentRequest: NSFetchRequest<Parent>
-    private let objectFetcher: GroupedObjectFetcher<Parent, Child>
+    private let childRequest: @Sendable (Parent) -> NSFetchRequest<Child>
     
     public typealias Value = [Parent: [Child]]
     public typealias ID = FetchRequestID
@@ -294,18 +323,31 @@ public struct FetchGroupedObjectKey<Parent: NSManagedObject, Child: NSManagedObj
         
         self.container = container
         self.parentRequest = parent
-        self.objectFetcher = MainActor.assumeIsolated {
-            GroupedObjectFetcher<Parent, Child>(groupRequest: parent, childRequest: child, context: container.viewContext)
-        }
+        self.childRequest = child
     }
     
     public func load(
         context: LoadContext<[Parent: [Child]]>,
         continuation: LoadContinuation<[Parent: [Child]]>
     ) {
+        let container = self.container
+        let parentRequest = self.parentRequest
+        let childRequest = self.childRequest
+        
         Task { @MainActor in
-            let groupedObjects = objectFetcher.groupedObjects()
-            continuation.resume(returning: groupedObjects)
+            let context = container.viewContext
+            do {
+                var group = [Parent: [Child]]()
+                let results = try context.fetch(parentRequest)
+                for result in results {
+                    let cRequest = childRequest(result)
+                    let children = try context.fetch(cRequest)
+                    group[result] = children
+                }
+                continuation.resume(returning: group)
+            } catch {
+                continuation.resume(returning: [:])
+            }
         }
     }
     
@@ -313,16 +355,23 @@ public struct FetchGroupedObjectKey<Parent: NSManagedObject, Child: NSManagedObj
         context: LoadContext<[Parent: [Child]]>,
         subscriber: SharedSubscriber<[Parent: [Child]]>
     ) -> SharedSubscription {
-        Task { @MainActor in
+        let container = self.container
+        let parentRequest = self.parentRequest
+        let childRequest = self.childRequest
+        
+        let task = Task { @MainActor in
+            let objectFetcher = GroupedObjectFetcher<Parent, Child>(
+                groupRequest: parentRequest,
+                childRequest: childRequest,
+                context: container.viewContext
+            )
             for await groupedObjects in objectFetcher.groupedObjectsStream {
                 subscriber.yield(groupedObjects)
             }
         }
         
         return SharedSubscription {
-            Task { @MainActor in
-                objectFetcher.cancelStream()
-            }
+            task.cancel()
         }
     }
 }
