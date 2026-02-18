@@ -18,7 +18,7 @@ swift test
 - Preserve Core Data context/threading safety:
   - no cross-context `NSManagedObject` passing
   - use `NSManagedObjectID` for cross-boundary communication
-- Ensure CI passes.
+- Run `swift test` locally before submitting.
 
 ## Release Notes
 
