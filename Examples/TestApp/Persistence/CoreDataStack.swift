@@ -1,63 +1,72 @@
-//
-//  File.swift
-//  sharing-CoreData
-//
-//  Created by Beka Demuradze on 10.04.25.
-//
-
-import Foundation
 import CoreData
+import Foundation
 
-extension NSPersistentContainer {
-    static var testing: NSPersistentContainer {
-        // Create the NSManagedObjectModel programmatically
-        let model = NSManagedObjectModel()
-        
-        // Define an entity, for example "Person"
-        let personEntity = NSEntityDescription()
-        personEntity.name = "Person"
-        // Adjust the managed object class name according to your project setup.
-        personEntity.managedObjectClassName = "Person" // or "YourModuleName.Person"
-        
-        // Define a non-optional string attribute "name"
-        let nameAttribute = NSAttributeDescription()
-        nameAttribute.name = "name"
-        nameAttribute.attributeType = .stringAttributeType
-        nameAttribute.isOptional = false
-        
-        // Define a non-optional integer attribute "age"
-        let ageAttribute = NSAttributeDescription()
-        ageAttribute.name = "age"
-        ageAttribute.attributeType = .integer16AttributeType
-        ageAttribute.isOptional = false
-        
-        // Add attributes to the entity
-        personEntity.properties = [nameAttribute, ageAttribute]
-        
-        // Set the entity to the model
-        model.entities = [personEntity]
-        
-        // Initialize the persistent container with the in-code model.
-        // The name provided here ("MyModel") is arbitrary since you're not using a model file.
-        let persistentContainer = NSPersistentContainer(name: "TestDatabase", managedObjectModel: model)
-        
-        // Load persistent stores as usual.
-        persistentContainer.loadPersistentStores { storeDescription, error in
-            if let error = error as NSError? {
-                fatalError("Unresolved error \(error), \(error.userInfo)")
+enum ExampleCoreDataStack {
+    private static let modelName = "TestAppModel"
+    private static let sqliteFileName = "TestApp.sqlite"
+
+    static func makePersistentContainer() -> NSPersistentContainer {
+        let container = NSPersistentContainer(
+            name: modelName,
+            managedObjectModel: managedObjectModel()
+        )
+
+        let description = NSPersistentStoreDescription(url: persistentStoreURL())
+        description.type = NSSQLiteStoreType
+        description.shouldAddStoreAsynchronously = false
+        description.shouldMigrateStoreAutomatically = true
+        description.shouldInferMappingModelAutomatically = true
+        container.persistentStoreDescriptions = [description]
+
+        container.loadPersistentStores { _, error in
+            if let error {
+                fatalError("Failed to load persistent store: \(error)")
             }
         }
-        
-        return persistentContainer
+
+        container.viewContext.automaticallyMergesChangesFromParent = true
+        container.viewContext.mergePolicy = NSMergeByPropertyStoreTrumpMergePolicy
+
+        return container
     }
-}
 
-@objc(Person)
-public class Person: NSManagedObject {
-    // Optionally add properties, methods, etc.
-}
+    private static func managedObjectModel() -> NSManagedObjectModel {
+        let model = NSManagedObjectModel()
+        model.entities = [personEntity()]
+        return model
+    }
 
-extension Person {
-    @NSManaged public var name: String
-    @NSManaged public var age: Int16
+    private static func personEntity() -> NSEntityDescription {
+        let entity = NSEntityDescription()
+        entity.name = "Person"
+        entity.managedObjectClassName = NSStringFromClass(Person.self)
+        entity.properties = [
+            attribute(name: "id", type: .UUIDAttributeType),
+            attribute(name: "name", type: .stringAttributeType),
+            attribute(name: "updatedAt", type: .dateAttributeType),
+            attribute(name: "tick", type: .integer64AttributeType),
+        ]
+        entity.uniquenessConstraints = [["id"]]
+        return entity
+    }
+
+    private static func attribute(name: String, type: NSAttributeType) -> NSAttributeDescription {
+        let attribute = NSAttributeDescription()
+        attribute.name = name
+        attribute.attributeType = type
+        attribute.isOptional = false
+        return attribute
+    }
+
+    private static func persistentStoreURL() -> URL {
+        let fileManager = FileManager.default
+        let appSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let directoryURL = appSupportURL.appendingPathComponent("SharingCoreDataTestApp", isDirectory: true)
+
+        if !fileManager.fileExists(atPath: directoryURL.path) {
+            try? fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        }
+
+        return directoryURL.appendingPathComponent(sqliteFileName)
+    }
 }

@@ -12,7 +12,7 @@
 Add this package to your `Package.swift` dependencies:
 
 ```swift
-.package(url: "https://github.com/bekademuradze/sharing-core-data.git", from: "1.0.0")
+.package(url: "https://github.com/tobi404/sharing-core-data.git", from: "1.0.0")
 ```
 
 Then add the product:

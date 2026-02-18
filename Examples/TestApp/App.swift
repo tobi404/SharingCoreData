@@ -1,27 +1,19 @@
-//
-//  App.swift
-//  sharing-CoreData
-//
-//  Created by Beka Demuradze on 10.04.25.
-//
-
 import SwiftUI
+import SharingCoreData
 
 @main
-struct App: View {
+struct TestApp: App {
+    private let persistentContainer = ExampleCoreDataStack.makePersistentContainer()
+
     init() {
         prepareDependencies {
-            $0.persistentContainer = .testing
+            $0.persistentContainer = persistentContainer
         }
     }
-    
-    var body: some View {
-        WindowGroup {
-            Text("Hello, World!")
-        }
-    }
-}
 
-#Preview {
-    App()
+    var body: some Scene {
+        WindowGroup {
+            ContentView(container: persistentContainer)
+        }
+    }
 }
