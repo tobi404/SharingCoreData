@@ -9,28 +9,19 @@
 
 @MainActor
 final class GroupedObjectFetcher<T: NSManagedObject, C: NSManagedObject>: Sendable {
+    
     // MARK: - Properties
     
-    private let groupRequest: NSFetchRequest<T>
-    private let childRequest: @Sendable (T) -> NSFetchRequest<C>
-    private let context: NSManagedObjectContext
-    private var parentListener: ContextListener<T>?  // NEW: Listener for parent type
-    private var childListener: ContextListener<C>?   // RENAMED: Listener for child type
-    
-    // AsyncStream properties
-    private var isStreamActive = true
-    private var continuation: AsyncStream<[T: [C]]>.Continuation?
-    private var _groupedObjectsStream: AsyncStream<[T: [C]]>?
-    var groupedObjectsStream: AsyncStream<[T: [C]]> {
+    var groupedObjectsStream: AsyncStream<UnsafeSendableValue<[T: [C]]>> {
         if let stream = _groupedObjectsStream {
             return stream
         }
         
         // Initialize on first access
-        var cont: AsyncStream<[T: [C]]>.Continuation!
-        let stream = AsyncStream<[T: [C]]> { continuation in
+        var cont: AsyncStream<UnsafeSendableValue<[T: [C]]>>.Continuation!
+        let stream = AsyncStream<UnsafeSendableValue<[T: [C]]>> { continuation in
             cont = continuation
-            continuation.yield([:])
+            continuation.yield(UnsafeSendableValue(value: [:]))
         }
         
         // Store the values
@@ -38,6 +29,17 @@ final class GroupedObjectFetcher<T: NSManagedObject, C: NSManagedObject>: Sendab
         self._groupedObjectsStream = stream
         return stream
     }
+    
+    private let groupRequest: NSFetchRequest<T>
+    private let childRequest: @Sendable (T) -> NSFetchRequest<C>
+    private let context: NSManagedObjectContext
+    private var parentListener: ContextListener<T>?
+    private var childListener: ContextListener<C>?
+    
+    // AsyncStream properties
+    private var isStreamActive = true
+    private var continuation: AsyncStream<UnsafeSendableValue<[T: [C]]>>.Continuation?
+    private var _groupedObjectsStream: AsyncStream<UnsafeSendableValue<[T: [C]]>>?
     // Current value cache
     private var currentGroupedObjects: [T: [C]] = [:]
     
@@ -107,10 +109,10 @@ final class GroupedObjectFetcher<T: NSManagedObject, C: NSManagedObject>: Sendab
                 group[result] = childs
             }
             setCurrentGroupedObjects(group)
-            continuation?.yield(group)
+            continuation?.yield(UnsafeSendableValue(value: group))
         } catch {
             print("Error fetching grouped objects: \(error)")
-            continuation?.yield([:])
+            continuation?.yield(UnsafeSendableValue(value: [:]))
         }
     }
     
@@ -122,7 +124,7 @@ final class GroupedObjectFetcher<T: NSManagedObject, C: NSManagedObject>: Sendab
         continuation = nil
     }
     
-    func createNewStream() -> AsyncStream<[T: [C]]> {
+    func createNewStream() -> AsyncStream<UnsafeSendableValue<[T: [C]]>> {
         // Cancel existing stream if active
         if isStreamActive {
             cancelStream()
@@ -130,11 +132,11 @@ final class GroupedObjectFetcher<T: NSManagedObject, C: NSManagedObject>: Sendab
         
         // Create new stream
         isStreamActive = true
-        var newContinuation: AsyncStream<[T: [C]]>.Continuation!
-        let newStream = AsyncStream<[T: [C]]> { cont in
+        var newContinuation: AsyncStream<UnsafeSendableValue<[T: [C]]>>.Continuation!
+        let newStream = AsyncStream<UnsafeSendableValue<[T: [C]]>> { cont in
             newContinuation = cont
             // Send current objects immediately
-            cont.yield(currentGroupedObjects)
+            cont.yield(UnsafeSendableValue(value: currentGroupedObjects))
         }
         self.continuation = newContinuation
         

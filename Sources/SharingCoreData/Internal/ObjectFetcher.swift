@@ -9,31 +9,32 @@
 
 @MainActor
 final class ObjectFetcher<T: NSManagedObject>: Sendable {
+    
     // MARK: - Properties
+    var objectsStream: AsyncStream<UnsafeSendableValue<[T]>> {
+        if let _objectsStream {
+            return _objectsStream
+        }
+        
+        var continuation: AsyncStream<UnsafeSendableValue<[T]>>.Continuation!
+        let stream = AsyncStream<UnsafeSendableValue<[T]>> { cont in
+            continuation = cont
+            // Send initial empty array
+            cont.yield(UnsafeSendableValue(value: []))
+        }
+        self._objectsStream = stream
+        self.continuation = continuation
+        return stream
+    }
     
     private let fetchRequest: NSFetchRequest<T>
     private let context: NSManagedObjectContext
     private var listener: ContextListener<T>?
     
     // AsyncStream properties
-    private var continuation: AsyncStream<[T]>.Continuation?
+    private var continuation: AsyncStream<UnsafeSendableValue<[T]>>.Continuation?
     private var isStreamActive = true
-    private var _objectsStream: AsyncStream<[T]>?
-    var objectsStream: AsyncStream<[T]> {
-        if let _objectsStream {
-            return _objectsStream
-        }
-        
-        var continuation: AsyncStream<[T]>.Continuation!
-        let stream = AsyncStream<[T]> { cont in
-            continuation = cont
-            // Send initial empty array
-            cont.yield([])
-        }
-        self._objectsStream = stream
-        self.continuation = continuation
-        return stream
-    }
+    private var _objectsStream: AsyncStream<UnsafeSendableValue<[T]>>?
     
     // Current value cache
     private var currentObjects: [T] = []
@@ -83,10 +84,10 @@ final class ObjectFetcher<T: NSManagedObject>: Sendable {
         do {
             let results = try context.fetch(fetchRequest)
             setCurrentObjects(results)
-            continuation?.yield(results)
+            continuation?.yield(UnsafeSendableValue(value: results))
         } catch {
             print("Error fetching objects: \(error)")
-            continuation?.yield([])
+            continuation?.yield(UnsafeSendableValue(value: []))
         }
     }
     
@@ -98,7 +99,7 @@ final class ObjectFetcher<T: NSManagedObject>: Sendable {
         continuation = nil
     }
     
-    func createNewStream() -> AsyncStream<[T]> {
+    func createNewStream() -> AsyncStream<UnsafeSendableValue<[T]>> {
         // Cancel existing stream if active
         if isStreamActive {
             cancelStream()
@@ -106,11 +107,11 @@ final class ObjectFetcher<T: NSManagedObject>: Sendable {
         
         // Create new stream
         isStreamActive = true
-        var newContinuation: AsyncStream<[T]>.Continuation!
-        let newStream = AsyncStream<[T]> { cont in
+        var newContinuation: AsyncStream<UnsafeSendableValue<[T]>>.Continuation!
+        let newStream = AsyncStream<UnsafeSendableValue<[T]>> { cont in
             newContinuation = cont
             // Send current objects immediately
-            cont.yield(currentObjects)
+            cont.yield(UnsafeSendableValue(value: currentObjects))
         }
         self.continuation = newContinuation
         

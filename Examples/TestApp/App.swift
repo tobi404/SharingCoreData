@@ -11,7 +11,7 @@ import SwiftUI
 struct App: View {
     init() {
         prepareDependencies {
-            $0.defaultContainer = .testing
+            $0.persistentContainer = .testing
         }
     }
     

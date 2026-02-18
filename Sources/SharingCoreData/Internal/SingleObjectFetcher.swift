@@ -10,31 +10,31 @@
 @MainActor
 final class SingleObjectFetcher<T: NSManagedObject & Identifiable>: Sendable {
     // MARK: - Properties
-    
-    private let fetchRequest: NSFetchRequest<T>
-    private let context: NSManagedObjectContext
-    private var listener: ContextListener<T>?
-    
-    // AsyncStream properties
-    private var continuation: AsyncStream<T?>.Continuation?
-    private var isStreamActive = true
-    private var _objectStream: AsyncStream<T?>?
-    var objectStream: AsyncStream<T?> {
+    var objectStream: AsyncStream<UnsafeSendableValue<T?>> {
         if let _objectStream {
             return _objectStream
         }
         
-        var continuation: AsyncStream<T?>.Continuation!
-        let stream = AsyncStream<T?> { cont in
+        var continuation: AsyncStream<UnsafeSendableValue<T?>>.Continuation!
+        let stream = AsyncStream<UnsafeSendableValue<T?>> { cont in
             continuation = cont
             // Send initial nil
-            cont.yield(nil)
+            cont.yield(UnsafeSendableValue(value: nil))
         }
         
         self._objectStream = stream
         self.continuation = continuation
         return stream
     }
+    
+    private let fetchRequest: NSFetchRequest<T>
+    private let context: NSManagedObjectContext
+    private var listener: ContextListener<T>?
+    
+    // AsyncStream properties
+    private var continuation: AsyncStream<UnsafeSendableValue<T?>>.Continuation?
+    private var isStreamActive = true
+    private var _objectStream: AsyncStream<UnsafeSendableValue<T?>>?
     
     // Current value cache
     private var currentObject: T?
@@ -74,10 +74,8 @@ final class SingleObjectFetcher<T: NSManagedObject & Identifiable>: Sendable {
                     // Refetch the object on insert or update
                     await self.fetch()
                 case .deleted:
-                    // If our object was deleted, set to nil
-                    if self.object() != nil {
-                        self.setToNil()
-                    }
+                    // Refetch to avoid reacting to unrelated deletes of the same entity type.
+                    await self.fetch()
                 }
             }
         }
@@ -87,7 +85,7 @@ final class SingleObjectFetcher<T: NSManagedObject & Identifiable>: Sendable {
     
     private func setToNil() {
         self.currentObject = nil
-        self.continuation?.yield(nil)
+        self.continuation?.yield(UnsafeSendableValue(value: nil))
     }
     
     private func setObject(_ newValue: T?) {
@@ -106,13 +104,13 @@ final class SingleObjectFetcher<T: NSManagedObject & Identifiable>: Sendable {
             // Only yield if the object is different (by objectID)
             if currentObject != object {
                 setObject(object)
-                continuation?.yield(object)
+                continuation?.yield(UnsafeSendableValue(value: object))
             } else if let currentObject = currentObject, let object {
                 // If same objectID but potentially updated values, check if we need to update
                 // This is a simple approach - in a real app you might want to compare specific properties
                 if currentObject.isUpdated {
                     setObject(object)
-                    continuation?.yield(object)
+                    continuation?.yield(UnsafeSendableValue(value: object))
                 }
             }
         } catch {
@@ -129,7 +127,7 @@ final class SingleObjectFetcher<T: NSManagedObject & Identifiable>: Sendable {
         continuation = nil
     }
     
-    func createNewStream() -> AsyncStream<T?> {
+    func createNewStream() -> AsyncStream<UnsafeSendableValue<T?>> {
         // Cancel existing stream if active
         if isStreamActive {
             cancelStream()
@@ -137,11 +135,11 @@ final class SingleObjectFetcher<T: NSManagedObject & Identifiable>: Sendable {
         
         // Create new stream
         isStreamActive = true
-        var newContinuation: AsyncStream<T?>.Continuation!
-        let newStream = AsyncStream<T?> { cont in
+        var newContinuation: AsyncStream<UnsafeSendableValue<T?>>.Continuation!
+        let newStream = AsyncStream<UnsafeSendableValue<T?>> { cont in
             newContinuation = cont
             // Send current object immediately
-            cont.yield(currentObject)
+            cont.yield(UnsafeSendableValue(value: currentObject))
         }
         self.continuation = newContinuation
         

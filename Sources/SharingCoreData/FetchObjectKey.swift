@@ -60,13 +60,16 @@ extension SharedReaderKey {
     
     public static func fetchGrouped<Parent: NSManagedObject, Child: NSManagedObject>(
         groupRequest: NSFetchRequest<Parent>,
-        childRequest: @escaping @Sendable (Parent) -> NSFetchRequest<Child>
+        childRequest: @escaping @Sendable (Parent) -> NSFetchRequest<Child>,
+        fileID: StaticString = #fileID,
+        line: UInt = #line
     ) -> Self
     where Self == FetchGroupedObjectKey<Parent, Child>.Default {
         Self[
             FetchGroupedObjectKey(
                 group: groupRequest,
-                child: childRequest
+                child: childRequest,
+                groupingIdentity: "\(fileID):\(line)"
             ),
             default: [:]
         ]
@@ -83,7 +86,7 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
     public typealias ID = FetchRequestID
     
     public var id: ID {
-        FetchRequestID(from: fetchRequest)
+        FetchRequestID(from: fetchRequest, queryKind: "all")
     }
     
     init(
@@ -139,7 +142,7 @@ public struct FetchAllObjectKey<Object: NSManagedObject>: SharedReaderKey {
                 context: container.viewContext
             )
             for await objects in objectFetcher.objectsStream {
-                subscriber.yield(objects)
+                subscriber.yield(objects.value)
             }
         }
         
@@ -159,7 +162,7 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
     public typealias ID = FetchRequestID
     
     public var id: ID {
-        FetchRequestID(from: fetchRequest)
+        FetchRequestID(from: fetchRequest, queryKind: "one")
     }
     
     init(
@@ -171,6 +174,7 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
         
         let fetchRequest = Object.fetchRequest() as! NSFetchRequest<Object>
         fetchRequest.predicate = predicate
+        fetchRequest.fetchLimit = 1
         
         if let sort {
             fetchRequest.sortDescriptors = [sort]
@@ -191,12 +195,8 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
         
         Task { @MainActor in
             let context = container.viewContext
-            // Mimic SingleObjectFetcher init logic: limit 1
-            let request = fetchRequest.copy() as! NSFetchRequest<Object>
-            request.fetchLimit = 1
-            
             do {
-                let results = try context.fetch(request)
+                let results = try context.fetch(fetchRequest)
                 if let object = results.first {
                     continuation.resume(returning: object)
                 } else {
@@ -221,7 +221,7 @@ public struct FetchOneObjectKey<Object: NSManagedObject & Identifiable>: SharedR
                 context: container.viewContext
             )
             for await object in objectFetcher.objectStream {
-                subscriber.yield(object)
+                subscriber.yield(object.value)
             }
         }
         
@@ -241,7 +241,7 @@ public struct FetchCountKey<Object: NSManagedObject>: SharedReaderKey {
     public typealias ID = FetchRequestID
     
     public var id: ID {
-        FetchRequestID(from: fetchRequest)
+        FetchRequestID(from: fetchRequest, queryKind: "count")
     }
     
     init(
@@ -307,23 +307,30 @@ public struct FetchGroupedObjectKey<Parent: NSManagedObject, Child: NSManagedObj
     private let container: NSPersistentContainer
     private let parentRequest: NSFetchRequest<Parent>
     private let childRequest: @Sendable (Parent) -> NSFetchRequest<Child>
+    private let groupingIdentity: String
     
     public typealias Value = [Parent: [Child]]
     public typealias ID = FetchRequestID
     
     public var id: ID {
-        FetchRequestID(from: parentRequest)
+        FetchRequestID(
+            from: parentRequest,
+            queryKind: "grouped",
+            groupedChildIdentity: groupingIdentity
+        )
     }
     
     init(
         group parent: NSFetchRequest<Parent>,
-        child: @escaping @Sendable (Parent) -> NSFetchRequest<Child>
+        child: @escaping @Sendable (Parent) -> NSFetchRequest<Child>,
+        groupingIdentity: String
     ) {
         @Dependency(\.persistentContainer) var container
         
         self.container = container
         self.parentRequest = parent
         self.childRequest = child
+        self.groupingIdentity = groupingIdentity
     }
     
     public func load(
@@ -366,7 +373,7 @@ public struct FetchGroupedObjectKey<Parent: NSManagedObject, Child: NSManagedObj
                 context: container.viewContext
             )
             for await groupedObjects in objectFetcher.groupedObjectsStream {
-                subscriber.yield(groupedObjects)
+                subscriber.yield(groupedObjects.value)
             }
         }
         
@@ -383,20 +390,40 @@ public struct FetchRequestID: Hashable {
     fileprivate let entityName: String
     fileprivate let predicateFormat: String?
     fileprivate let sortDescriptorRepresentations: [SortDescriptorRepresentation]
+    fileprivate let fetchLimit: Int
+    fileprivate let fetchOffset: Int
+    fileprivate let fetchBatchSize: Int
+    fileprivate let includesPendingChanges: Bool
+    fileprivate let returnsObjectsAsFaults: Bool
+    fileprivate let relationshipKeyPathsForPrefetching: [String]
+    fileprivate let queryKind: String
+    fileprivate let groupedChildIdentity: String?
     
     // Helper struct for sort descriptors
     fileprivate struct SortDescriptorRepresentation: Hashable {
         let key: String?
         let ascending: Bool
+        let selector: String?
+        let descriptor: String
         
         init(from sortDescriptor: NSSortDescriptor) {
             self.key = sortDescriptor.key
             self.ascending = sortDescriptor.ascending
+            self.selector = sortDescriptor.selector.map(NSStringFromSelector)
+            self.descriptor = String(describing: sortDescriptor)
         }
     }
     
     // Initialize from an NSFetchRequest
     public init<T: NSFetchRequestResult>(from fetchRequest: NSFetchRequest<T>) {
+        self.init(from: fetchRequest, queryKind: "all", groupedChildIdentity: nil)
+    }
+
+    init<T: NSFetchRequestResult>(
+        from fetchRequest: NSFetchRequest<T>,
+        queryKind: String,
+        groupedChildIdentity: String? = nil
+    ) {
         self.entityName = fetchRequest.entityName ?? ""
         
         // Handle predicate
@@ -410,16 +437,14 @@ public struct FetchRequestID: Hashable {
         } else {
             self.sortDescriptorRepresentations = []
         }
+
+        self.fetchLimit = fetchRequest.fetchLimit
+        self.fetchOffset = fetchRequest.fetchOffset
+        self.fetchBatchSize = fetchRequest.fetchBatchSize
+        self.includesPendingChanges = fetchRequest.includesPendingChanges
+        self.returnsObjectsAsFaults = fetchRequest.returnsObjectsAsFaults
+        self.relationshipKeyPathsForPrefetching = fetchRequest.relationshipKeyPathsForPrefetching ?? []
+        self.queryKind = queryKind
+        self.groupedChildIdentity = groupedChildIdentity
     }
 }
-
-// MARK: - Core Data sendability
-
-// SAFETY: This is a dangerous conformance required for 'swift-sharing' interoperability.
-// NSManagedObjects are NOT thread-safe. They must ONLY be accessed on the actor they were created on (here, @MainActor).
-// The library fetchers are isolated to @MainActor, so as long as these values are consumed on MainActor, it is safe-ish.
-// Accessing properties of these objects on a background thread WILL cause a crash or data corruption.
-extension NSManagedObject: @unchecked @retroactive Sendable {}
-extension NSPredicate: @unchecked @retroactive Sendable {}
-extension KeyPath: @unchecked @retroactive Sendable where Root: Sendable, Value: Sendable {}
-extension NSFetchRequest: @unchecked @retroactive Sendable {}

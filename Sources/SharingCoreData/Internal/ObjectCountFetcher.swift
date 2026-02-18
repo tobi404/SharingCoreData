@@ -9,6 +9,7 @@
 
 @MainActor
 final class ObjectCountFetcher<T: NSManagedObject>: Sendable {
+    
     // MARK: - Properties
     
     private let fetchRequest: NSFetchRequest<T>

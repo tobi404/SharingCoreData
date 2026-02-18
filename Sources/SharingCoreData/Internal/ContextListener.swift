@@ -9,22 +9,30 @@ import Dependencies
 @preconcurrency import CoreData
 @preconcurrency import CloudKit
 
+private let persistentHistoryTokenKey = "PersistentHistoryToken"
+
 @MainActor
 final class ContextListener<T: NSManagedObject>: Sendable {
+    // MARK: - Types
+
     enum ChangeType: Sendable {
         case inserted
         case deleted
         case updated
     }
     
+    // MARK: - Properties
+
     private let onChange: @Sendable (ChangeType) -> Void
     private let context: NSManagedObjectContext
     private var notificationToken: NSObjectProtocol?
     private var forceRefreshToken: NSObjectProtocol?
     private var cloudKitSyncToken: NSObjectProtocol?
-    private var lastToken: NSPersistentHistoryToken?
-    private var throttleTask: Task<Void, Never>? // Throttling task
+    private var lastTokenData: Data?
+    private var throttleTask: Task<Void, Never>?
     
+    // MARK: - Initialization
+
     @MainActor
     init(
         context: NSManagedObjectContext,
@@ -32,10 +40,12 @@ final class ContextListener<T: NSManagedObject>: Sendable {
     ) {
         self.context = context
         self.onChange = onChange
-        Task { self.startObserving() }
+        self.startObserving()
     }
     
     deinit {
+        throttleTask?.cancel()
+
         if let token = notificationToken {
             NotificationCenter.default.removeObserver(token)
         }
@@ -49,35 +59,42 @@ final class ContextListener<T: NSManagedObject>: Sendable {
         }
     }
     
+    // MARK: - Setup
+
     private func startObserving() {
         let context = self.context
         let onChangeHandler = self.onChange
+        let observedEntityName = String(describing: T.self)
         
         notificationToken = NotificationCenter.default.addObserver(
             forName: .NSManagedObjectContextObjectsDidChange,
             object: context,
-            queue: nil
+            queue: .main
         ) { [weak self] notification in
-            let inserts = notification.userInfo?[NSInsertedObjectsKey] as? Set<NSManagedObject>
-            let deletes = notification.userInfo?[NSDeletedObjectsKey] as? Set<NSManagedObject>
-            let updates = notification.userInfo?[NSUpdatedObjectsKey] as? Set<NSManagedObject>
+            guard self != nil else { return }
+            let insertedIDs = (notification.userInfo?[NSInsertedObjectsKey] as? Set<NSManagedObject>)?
+                .map(\.objectID) ?? []
+            let deletedIDs = (notification.userInfo?[NSDeletedObjectsKey] as? Set<NSManagedObject>)?
+                .map(\.objectID) ?? []
+            let updatedIDs = (notification.userInfo?[NSUpdatedObjectsKey] as? Set<NSManagedObject>)?
+                .map(\.objectID) ?? []
             
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                if let changeType = self.determineChangeType(inserts: inserts, deletes: deletes, updates: updates) {
-                    onChangeHandler(changeType)
-                }
+            if let changeType = Self.determineChangeType(
+                entityName: observedEntityName,
+                insertedIDs: insertedIDs,
+                deletedIDs: deletedIDs,
+                updatedIDs: updatedIDs
+            ) {
+                onChangeHandler(changeType)
             }
         }
         
         forceRefreshToken = NotificationCenter.default.addObserver(
             forName: .forceReloadData,
             object: nil,
-            queue: nil
-        ) { notification in
-            Task {
-                onChangeHandler(.updated)
-            }
+            queue: .main
+        ) { _ in
+            onChangeHandler(.updated)
         }
         
         if #available(iOS 14.0, *) {
@@ -98,7 +115,7 @@ final class ContextListener<T: NSManagedObject>: Sendable {
                 switch (event.type, finished) {
                 case (.import, true):
                     Task {
-                        await self?.processPersistentHistory(for: event)
+                        await self?.processPersistentHistory()
                     }
                 default:
                     break
@@ -107,79 +124,118 @@ final class ContextListener<T: NSManagedObject>: Sendable {
         }
     }
     
-    private func determineChangeType(
-        inserts: Set<NSManagedObject>?,
-        deletes: Set<NSManagedObject>?,
-        updates: Set<NSManagedObject>?
+    // MARK: - Change Classification
+
+    nonisolated private static func determineChangeType(
+        entityName: String,
+        insertedIDs: [NSManagedObjectID],
+        deletedIDs: [NSManagedObjectID],
+        updatedIDs: [NSManagedObjectID]
     ) -> ChangeType? {
-        // Check if any inserted/deleted/updated objects are of type T
-        if let inserts, inserts.contains(where: { $0 is T }) {
+        if insertedIDs.contains(where: { $0.entity.name == entityName }) {
             return .inserted
         }
         
-        if let deletes, deletes.contains(where: { $0 is T }) {
+        if deletedIDs.contains(where: { $0.entity.name == entityName }) {
             return .deleted
         }
         
-        if let updates, updates.contains(where: { $0 is T }) {
+        if updatedIDs.contains(where: { $0.entity.name == entityName }) {
             return .updated
         }
         
         return nil
     }
     
+    // MARK: - Persistent History
+
     @available(iOS 14.0, *)
-    private func processPersistentHistory(for event: NSPersistentCloudKitContainer.Event) {
+    private func processPersistentHistory() async {
         @Dependency(\.persistentContainer) var container
         
+        guard let storeURL = container.persistentStoreCoordinator.persistentStores.first?.url else {
+            print("Failed to fetch history: missing persistent store.")
+            return
+        }
+
         let backgroundContext = container.newBackgroundContext()
-        let lastToken = self.lastToken ?? loadHistoryToken()
+        let previousTokenData = self.lastTokenData ?? loadHistoryTokenData()
         
-        backgroundContext.performAndWait {
-            @Dependency(\.persistentContainer) var container
-            let request = NSPersistentHistoryChangeRequest.fetchHistory(after: lastToken)
-            request.affectedStores = [container.persistentStoreCoordinator.persistentStores.first!]
-            
-            do {
-                let result = try backgroundContext.execute(request) as? NSPersistentHistoryResult
-                guard let transactions = result?.result as? [NSPersistentHistoryTransaction] else { return }
-                
-                for transaction in transactions {
-                    for change in transaction.changes ?? [] {
-                        let objectID = change.changedObjectID
-                        
-                        // Get the entity name (e.g., "User" or "Post")
-                        let entityName = objectID.entity.name ?? "Unknown"
-                        
-                        guard entityName == String(describing: T.self) else { continue }
-                        
-                        Task { @MainActor in
-                            switch change.changeType {
-                            case .insert:
-                                self.throttleChange(.inserted)
-                            case .update:
-                                self.throttleChange(.updated)
-                            case .delete:
-                                self.throttleChange(.deleted)
-                            @unknown default:
-                                break
+        do {
+            let (changeTypes, newTokenData): ([ChangeType], Data?) =
+                try await withCheckedThrowingContinuation { continuation in
+                    backgroundContext.perform {
+                        do {
+                            let token: NSPersistentHistoryToken?
+                            if let previousTokenData {
+                                token = try? NSKeyedUnarchiver.unarchivedObject(
+                                    ofClass: NSPersistentHistoryToken.self,
+                                    from: previousTokenData
+                                )
+                            } else {
+                                token = nil
                             }
+
+                            let request = NSPersistentHistoryChangeRequest.fetchHistory(after: token)
+                            if let matchingStore = backgroundContext.persistentStoreCoordinator?.persistentStores.first(
+                                where: { $0.url == storeURL }
+                            ) {
+                                request.affectedStores = [matchingStore]
+                            }
+
+                            let result = try backgroundContext.execute(request) as? NSPersistentHistoryResult
+                            guard let transactions = result?.result as? [NSPersistentHistoryTransaction] else {
+                                continuation.resume(returning: ([], previousTokenData))
+                                return
+                            }
+
+                            var changeTypes: [ChangeType] = []
+                            let entityName = String(describing: T.self)
+                            for transaction in transactions {
+                                for change in transaction.changes ?? [] {
+                                    guard change.changedObjectID.entity.name == entityName else { continue }
+                                    switch change.changeType {
+                                    case .insert:
+                                        changeTypes.append(.inserted)
+                                    case .update:
+                                        changeTypes.append(.updated)
+                                    case .delete:
+                                        changeTypes.append(.deleted)
+                                    @unknown default:
+                                        break
+                                    }
+                                }
+                            }
+
+                            let tokenData: Data?
+                            if let newToken = transactions.last?.token {
+                                tokenData = try NSKeyedArchiver.archivedData(
+                                    withRootObject: newToken,
+                                    requiringSecureCoding: true
+                                )
+                            } else {
+                                tokenData = previousTokenData
+                            }
+                            continuation.resume(returning: (changeTypes, tokenData))
+                        } catch {
+                            continuation.resume(throwing: error)
                         }
                     }
-                }
-                
-                if let newToken = transactions.last?.token {
-                    Task { @MainActor in
-                        self.lastToken = newToken
-                        self.saveHistoryToken(newToken)
-                    }
-                }
-            } catch {
-                print("Failed to fetch history: \(error)")
             }
+
+            for changeType in changeTypes {
+                throttleChange(changeType)
+            }
+
+            self.lastTokenData = newTokenData
+            saveHistoryTokenData(newTokenData)
+        } catch {
+            print("Failed to fetch history: \(error)")
         }
     }
     
+    // MARK: - Throttling
+
     private func throttleChange(_ changeType: ChangeType) {
         throttleTask?.cancel() // Cancel previous task
         throttleTask = Task { [weak self] in
@@ -193,47 +249,24 @@ final class ContextListener<T: NSManagedObject>: Sendable {
         }
     }
     
-    private func saveHistoryToken(_ token: NSPersistentHistoryToken?) {
-        guard let token = token else {
-            UserDefaults.standard.removeObject(forKey: "PersistentHistoryToken")
+    // MARK: - Token Persistence
+
+    private func saveHistoryTokenData(_ tokenData: Data?) {
+        guard let tokenData else {
+            UserDefaults.standard.removeObject(forKey: persistentHistoryTokenKey)
             return
         }
 
-        do {
-            let data = try NSKeyedArchiver.archivedData(
-                withRootObject: token,
-                requiringSecureCoding: true
-            )
-            UserDefaults.standard.set(data, forKey: "PersistentHistoryToken")
-        }
-        catch {
-            print("🔴 Failed to archive history token:", error)
-        }
+        UserDefaults.standard.set(tokenData, forKey: persistentHistoryTokenKey)
     }
 
-    // MARK: – Loading
-
-    private func loadHistoryToken() -> NSPersistentHistoryToken? {
-        guard let data = UserDefaults.standard.data(forKey: "PersistentHistoryToken") else {
-            return nil
-        }
-
-        do {
-            return try NSKeyedUnarchiver.unarchivedObject(
-                ofClass: NSPersistentHistoryToken.self,
-                from: data
-            )
-        }
-        catch {
-            print("🔴 Failed to unarchive history token:", error)
-            return nil
-        }
+    private func loadHistoryTokenData() -> Data? {
+        UserDefaults.standard.data(forKey: persistentHistoryTokenKey)
     }
 }
+
+// MARK: - Notifications
 
 public extension Notification.Name {
     static let forceReloadData = Notification.Name("force_reload_data")
 }
-
-@available(iOS 14.0, *)
-extension NSPersistentCloudKitContainer.Event: @unchecked @retroactive Sendable {}

@@ -22,12 +22,12 @@ extension DependencyValues {
                 if context == .preview {
                     return """
                     A blank, in-memory database is being used. To set the database that is used by \
-                    'SharingGRDB', use the 'prepareDependencies' tool as early as possible in the lifetime \
+                    'SharingCoreData', use 'prepareDependencies' as early as possible in the lifetime \
                     of your preview:
                     
                     #Preview {
                         let _ = prepareDependencies {
-                            $0.defaultDatabase = try! DatabaseQueue(/* ... */)
+                            $0.persistentContainer = NSPersistentContainer(name: "Model")
                         }
                     
                         // ...
@@ -36,7 +36,7 @@ extension DependencyValues {
                 } else {
                     return """
                     A blank, in-memory database is being used. To set the database that is used by \
-                    'SharingGRDB', use the 'prepareDependencies' tool as early as possible in the lifetime \
+                    'SharingCoreData', use 'prepareDependencies' as early as possible in the lifetime \
                     of your app, such as in your app or scene delegate in UIKit, or the app entry point in \
                     SwiftUI:
                     
@@ -44,7 +44,7 @@ extension DependencyValues {
                     struct MyApp: App {
                         init() {
                             prepareDependencies {
-                                $0.defaultDatabase = try! DatabaseQueue(/* ... */)
+                                $0.persistentContainer = NSPersistentContainer(name: "Model")
                             }   
                         }
                         
@@ -68,8 +68,6 @@ extension DependencyValues {
     }
 }
 
-//#if DEBUG
 extension String {
     static let defaultContainerName = "sharing.core_data.testValue"
 }
-//#endif
